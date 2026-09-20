@@ -1,6 +1,3 @@
-# Reference implementation (copied idea from)
-detox-hook/
-
 # Rust
 Cargo.lock
 /target/
@@ -25,3 +22,36 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# detox-hook: only track core Foundry project, exclude npm/yarn bot tooling
+detox-hook/node_modules/
+detox-hook/.yarn/
+detox-hook/.husky/
+detox-hook/.github/
+detox-hook/.cursor/
+detox-hook/.cursorrules
+detox-hook/.lintstagedrc.js
+detox-hook/.yarnrc.yml
+detox-hook/package.json
+detox-hook/package-lock.json
+detox-hook/yarn.lock
+detox-hook/load_env.sh
+detox-hook/README.md
+detox-hook/LICENCE
+
+# Foundry build artifacts (regenerated via forge build)
+detox-hook/packages/foundry/cache/
+detox-hook/packages/foundry/out/
+detox-hook/packages/foundry/broadcast/
+detox-hook/packages/foundry/deployments/
+detox-hook/packages/foundry/lib/
+detox-hook/packages/foundry/scripts-js/
+detox-hook/packages/foundry/.prettier.json
+detox-hook/packages/foundry/.gitignore
+detox-hook/packages/foundry/env.example
+detox-hook/packages/foundry/package.json
+detox-hook/packages/foundry/DEPLOYMENT.md
+detox-hook/packages/foundry/DEPLOYMENT_ANALYSIS.md
+detox-hook/packages/foundry/DEPLOYMENT_SWAPROUTER.md
+detox-hook/packages/foundry/DETOX_HOOK_DEPLOYMENT.md
+detox-hook/packages/foundry/HOOKMINER_INTEGRATION.md
