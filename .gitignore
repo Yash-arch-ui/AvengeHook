@@ -1,0 +1,27 @@
+# Reference implementation (copied idea from)
+detox-hook/
+
+# Rust
+Cargo.lock
+/target/
+
+# Solidity build artifacts
+/cache
+/out
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
