@@ -42,6 +42,15 @@ abigen!(
             ],
             "stateMutability": "view",
             "type": "function"
+        },
+        {
+            "inputs": [
+                {"internalType": "bytes[]", "name": "updateData", "type": "bytes[]"}
+            ],
+            "name": "updatePriceFeeds",
+            "outputs": [],
+            "stateMutability": "payable",
+            "type": "function"
         }
     ]
     "#

@@ -1,6 +1,7 @@
 mod config;
 mod deploy;
 mod hook;
+mod keeper;
 mod monitor;
 mod pyth;
 mod pyth_live;
@@ -16,6 +17,7 @@ async fn main() -> Result<()> {
         "monitor" => cmd_monitor().await,
         "prices" => cmd_prices().await,
         "live-prices" => cmd_live_prices().await,
+        "keeper" => cmd_keeper().await,
         "state" => cmd_state().await,
         "params" => cmd_params().await,
         "oracle" => cmd_oracle().await,
@@ -49,6 +51,9 @@ Commands:
   monitor          Watch for all DetoxHook events (real-time)
   prices           Fetch current Pyth oracle prices
   live-prices      Keyless on-chain Pyth reader (RPC HTTP/WS, no API keys)
+  keeper [interval_secs] [max_polls]
+                 Replay fresh Hermes payloads into the Pyth store
+                 (default every 5s; needs PYTH_API_KEY + DEPLOYMENT_KEY)
   state            Read on-chain hook state (owner, params, accumulated tokens)
   params           Show current hook parameters
   oracle           Get oracle prices with confidence from the hook contract
@@ -67,6 +72,7 @@ Environment variables (set in .env):
   RPC_URL          Ethereum RPC endpoint (HTTP or WSS)
   HOOK_ADDRESS     DetoxHook contract address
   PYTH_ADDRESS     Pyth oracle address
+  PYTH_API_KEY     Hermes API key for `keeper` (free trial at pythdata.app)
   CHAIN_ID         Chain ID (default: 421614 = Arbitrum Sepolia)
   FORGE_DIR        Path to Foundry project (auto-detected if unset)
   POOL_ID          Pool ID for state reads (default: ETH/USDC 0.30% / tickSpacing 60)
@@ -81,6 +87,13 @@ Environment variables (set in .env):
 async fn cmd_monitor() -> Result<()> {
     let cfg = config::Config::load()?;
     monitor::run_monitor(cfg.hook_address, &cfg.rpc_url, 2).await
+}
+
+async fn cmd_keeper() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let interval: u64 = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(5);
+    let max_polls: Option<u64> = args.get(3).and_then(|a| a.parse().ok());
+    keeper::run(interval, max_polls).await
 }
 
 async fn cmd_prices() -> Result<()> {

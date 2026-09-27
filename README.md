@@ -77,7 +77,7 @@ Swap arrives (exact input)
 | **Dynamic fee override** | `OVERRIDE_FEE_FLAG` charges 0.30% on an arb swap instead of the 0.05% base fee — *dynamic-fee pools only* (see [Fee override scope](#fee-override-scope)) |
 | **`poolManager.donate()`** | Updates `feeGrowthGlobal`, so captured value is distributed proportionally to in-range LPs |
 | **No-op `_beforeDonate`** | The address is mined with `BEFORE_DONATE_FLAG`; `BaseHook`'s default implementation would revert and break third-party `donate()` calls |
-| **Pyth pull oracle** | Prices are read inside the same transaction — no push data, no stale keeper |
+| **Pyth pull oracle** | Prices are read inside the same transaction — the hook never acts on cached keeper data (stale store → fail-open) |
 | **Fail-open** | Any oracle failure, missing liquidity, or over-sized capture degrades to "do nothing" rather than reverting the swap |
 
 ---
@@ -93,12 +93,13 @@ ARBITRAGEBOT/
 │   ├── Cargo.toml                         # ethers 2.0, tokio, eyre, serde
 │   ├── .env.example                       # Configuration template
 │   └── src/
-│       ├── main.rs                        # CLI entry point (15 commands)
+│       ├── main.rs                        # CLI entry point (16 commands)
 │       ├── config.rs                      # env config + FORGE_DIR / POOL_ID / USDC
 │       ├── hook.rs                        # abigen!() bindings incl. calculateArbitrageOpportunity
 │       ├── monitor.rs                     # real-time event monitoring (6 events)
 │       ├── deploy.rs                      # shells out to forge script
 │       ├── pyth.rs                        # direct Pyth price reads + normalization tests
+│       ├── keeper.rs                      # Hermes → store replay loop (keeper) + tests
 │       └── pyth_live.rs                   # keyless on-chain reader (live-prices) + tests
 │
 └── detox-hook/
@@ -152,7 +153,7 @@ contract DetoxHook is BaseHook {
 
     // State
     uint256 public rhoBps;                 // = CAPTURE_RATE * 100 = 7000 (owner-tunable)
-    uint256 public stalenessThreshold;     // owner-tunable (live: 30 d)
+    uint256 public stalenessThreshold;     // owner-tunable (live: 60 s, keeper-fed)
     address public owner;
     IPyth   public pythOracle;
     mapping(Currency => bytes32) public pythPriceIds;
@@ -241,6 +242,7 @@ Uniswap V4 only honors a `beforeSwap` fee override when `key.fee == LPFeeLibrary
 | `monitor` | Watch all 6 hook events in real time (polls every 2s) | No |
 | `prices` | Fetch ETH / USDC / BTC prices straight from Pyth | No |
 | `live-prices` | Keyless on-chain Pyth reader: age, freshness vs live staleness, RPC latency (HTTP/WS auto-detect) | No |
+| `keeper [interval] [maxPolls]` | Hermes → store replay loop: fetches signed payloads and publishes them every 5 s (default) | Yes (`PYTH_API_KEY`) |
 | `state` | Full on-chain state: owner, params, pool ID, accumulators, price IDs | No |
 | `params` | `rhoBps`, `stalenessThreshold`, `lpDonateBps` | No |
 | `oracle` | Oracle prices + confidence as the *hook* sees them | No |
@@ -267,6 +269,10 @@ cargo run -- monitor
 
 # Oracle prices as the hook sees them
 cargo run -- oracle
+
+# Keeper: replay fresh Hermes payloads into the Pyth store (needs PYTH_API_KEY)
+cargo run -- keeper          # every 5s, forever
+cargo run -- keeper 5 10     # 10 polls then exit
 
 # Simulate a 1.0 ETH swap selling currency0 (zeroForOne = true)
 cargo run -- simulate 1.0 true
@@ -303,6 +309,7 @@ main.rs        CLI arg parsing, command dispatch
  │              including calculateArbitrageOpportunity(PoolKey, SwapParams)
  ├── monitor.rs Block-polling loop (2s) decoding all 6 events by topic0
  ├── deploy.rs  Shells out to `forge script`, parses the deployed address
+ ├── keeper.rs  Hermes API → signed PNAU payload → updatePriceFeeds replay
  └── pyth.rs    Direct Pyth reads + expo → 1e8 normalization (unit-tested)
 ```
 
@@ -361,13 +368,13 @@ forge test
 
 The fork suite is the only one that touches the network — it hardcodes `https://sepolia-rollup.arbitrum.io/rpc`; everything else runs offline.
 
-### Rust — 10 / 10 passing
+### Rust — 14 / 14 passing
 
 ```bash
 cd avenge-rs && cargo test
 ```
 
-Pyth `expo` → 1e8 normalization (`test_normalize_*`), plus `pyth_live` reader tests: feed-ID stability, f64 math across mixed exponents, `1e8` scaling, negative-mantissa rejection, and the freshness window.
+Pyth `expo` → 1e8 normalization (`test_normalize_*`), plus `pyth_live` reader tests: feed-ID stability, f64 math across mixed exponents, `1e8` scaling, negative-mantissa rejection, and the freshness window — plus `keeper` tests: Hermes response decoding, `PNAU` magic validation, and feed-price parsing.
 
 ---
 
@@ -383,7 +390,7 @@ Pyth `expo` → 1e8 normalization (`test_normalize_*`), plus `pyth_live` reader 
 | `MAX_CAPTURE_BPS` | `5000` (50%) | Hard cap: capture can never exceed half of the swap input |
 | `ARB_FEE_PIPS` | `3000` (0.30%) | LP fee charged on a detected arb (dynamic pools only) |
 | `NORMAL_FEE_PIPS` | `500` (0.05%) | Base LP fee for dynamic pools |
-| `stalenessThreshold` | owner-set; live `2592000` s (30 d) | Oracle freshness limit (owner-tunable) |
+| `stalenessThreshold` | owner-set; live `60` s (keeper-fed) | Oracle freshness limit (owner-tunable) |
 | `BASIS_POINTS` | `10000` | 100% |
 
 > Fee units: Uniswap V4 LP fees are **pips** — `1e6 = 100%`. So `3000` is **0.30%**, not 30%.
@@ -397,7 +404,8 @@ HOOK_ADDRESS=0xf53c43858D62a1765480508f3bE7481e883380A8   # Required
 PYTH_ADDRESS=0x4374e5a8b9C22271E9EB878A2AA31DE97DF15DAF   # Optional (defaults to Arbitrum Sepolia)
 CHAIN_ID=421614                                           # Default: Arbitrum Sepolia
 FORGE_DIR=./detox-hook/packages/foundry                   # Auto-detected
-DEPLOYMENT_KEY=0x...                                      # Owner commands + deploy
+DEPLOYMENT_KEY=0x...                                      # Owner commands + deploy + keeper sends
+PYTH_API_KEY=...                                          # keeper only (free trial: pythdata.app)
 
 # Pool context used by `state` and `simulate`
 POOL_ID=0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b
@@ -463,25 +471,50 @@ CURRENCY1_DECIMALS=6
 **Deployment verified end-to-end (2026-09-27):**
 
 - Fresh hook build: full parameter getters (`rhoBps` 7000, `lpDonateBps` 8000, `arbFeePips` 3000, `normalFeePips` 500) and the `beforeDonate` flag, so third-party `poolManager.donate()` works.
-- `stalenessThreshold` is temporarily widened to **30 d** (`2592000` s, owner tx `0x7d8bb35c…`) because all Pyth Hermes price endpoints require a paid API key since the Pyth Core upgrade (2026-08-26) and no automated keeper is running yet, so a 60 s window kept both feeds `valid: false` and the hook permanently fail-open. With the 30 d window `oracle` reports `valid: true` for both feeds and `simulate` returns `shouldInterfere: true` in the arb direction. **Demo-only trade-off:** the hook now acts on days-old oracle data unless payload replays are made; see [Keyless price feeding](#keyless-price-feeding-verified-payload-replay) — verified replays hold prices under ~1–2 min, after which the window can return to 60 s.
+- `stalenessThreshold` is back to **60 s** (owner tx `0xde0993ab…66b0`). Earlier the same day it had been widened to 30 d (`2592000` s, tx `0x7d8bb35c…`) when Hermes went key-only in the Pyth Core upgrade and no keeper was running — a 60 s window then kept both feeds `valid: false` and the hook permanently fail-open. With the Hermes keeper live, `oracle` reports `valid: true` for both feeds within seconds of publication; see [Price feeding](#price-feeding-hermes-keeper--verified-keyless-replay). If the keeper stops (or the trial key expires), prices cross 60 s and the hook fails open, by design.
 - Live interference capture: tx [`0x85dd8e54…61490`](https://arbitrum-sepolia.blockscout.com/tx/0x85dd8e54fa2078b35fb8b0588f4ae49729ec30cccdb66c5179b1d09a96f61490) swapped 1 USDC → the hook detected the band deviation, emitted the capture event (`hookShare = 55119`, `opportunity = 78742`, exactly matching `simulate`), donated to LPs, applied the 0.30% override fee, and retained 11 024 units for the owner (`getAccumulatedTokens > 0`).
 - Both pools hold liquidity (1.3e12 in the active range) and return the exact initialization prices through `slot0`.
 
 ---
 
-## Keyless price feeding (verified: payload replay)
+## Price feeding (hermes keeper + verified keyless replay)
 
-All Hermes endpoints have required a paid API key since the Pyth Core
-upgrade (2026-08-26). Pyth payloads are **chain-agnostic within a contract
-generation** — every Core contract was upgraded in place that day, so a
-payload published on one chain verifies on any other chain's store.
+Since the Pyth Core upgrade (2026-08-26) Hermes requires an API key; a
+free trial at [Pyth Terminal](https://pythdata.app) is enough. Pyth
+payloads are **chain-agnostic within a contract generation** — every Core
+contract was upgraded in place that day, so a payload issued anywhere
+verifies on our Sepolia store.
 
-**How it works:** scrape the calldata of any live `updatePriceFeeds` /
+### Primary path: `keeper` (measured)
+
+`cargo run -- keeper` polls Hermes for ETH/USD + USDC/USD every 5 s,
+decodes the signed `PNAU` payload from `binary.data`, skips it unless it
+is newer than the store, then publishes with `getUpdateFee` +
+`updatePriceFeeds(bytes[])` (explicit 500k gas limit). Sustained run
+(2026-09-27, 8/8 and 3/3 polls status 1):
+
+| Metric | Measured |
+|---|---|
+| Payload age at fetch | **0–2 s** |
+| End-to-end freshness (publish → readable by the hook) | **≤ ~5 s** |
+| Update fee | **20 wei** per poll |
+| Skips | only when Hermes has nothing newer than the store |
+
+That sits far inside the live **60 s** `stalenessThreshold` — comfortably
+under the ~1–2 min the setup promises. Two caveats: the trial key expires
+after 14 days (grab a fresh one at pythdata.app and update
+`PYTH_API_KEY`), and if the keeper stops, the hook fails open 60 s later
+by design.
+
+### Keyless fallback: replay others' txs (verified)
+
+With no API key at all, calldata replay still works: scrape the `bytes[]`
+payload of any live `updatePriceFeeds` /
 `updatePriceFeedsIfNecessary` transaction on a busy chain (Ethereum
-mainnet, Base), extract the `bytes[]` payload, and replay it into our
-Sepolia store with `updatePriceFeeds(bytes[])`. The attached fee is
-**10–80 wei**; without it the call reverts `InsufficientFee()` — with it,
-every replay has succeeded.
+mainnet, Base) and replay it into our Sepolia store with
+`updatePriceFeeds(bytes[])`. The attached fee is **10–80 wei**; without
+it the call reverts `InsufficientFee()` — with it, every replay has
+succeeded.
 
 **Verified replays (2026-09-27, all status 1):**
 
@@ -493,17 +526,19 @@ every replay has succeeded.
 | Base batch ETH+USDC | `0xc5e6dc9f…67e0` | → ~59 min old |
 | Base batch ETH+USDC | `0x368355de…f674` | → **84 s old** |
 
-After the last replay both feeds read `valid: true` with sub-minute age
-and `simulate … shouldInterfere: true` in the arb direction.
+The store **verifies payload integrity** — a modified price with a valid
+structure reverts `InvalidUpdateData()`, so only genuine attested data
+can ever be published.
 
-**Source ranking (measured):** Base (`0xbC16…272F5`, free RPC
+**Source ranking (measured, keyless):** Base (`0xbC16…272F5`, free RPC
 `mainnet.base.org`) is best — 2 s blocks, batch payloads carrying ETH and
-USDC together, pushed within seconds of publish. Ethereum mainnet USDC is
-frequent; mainnet ETH and Arbitrum/OP/Polygon push irregularly or not at
-all. A keeper polling Base every ~5 s and replaying can hold prices under
-~1–2 min continuously, at which point `stalenessThreshold` can return to
-60 s. Reading (not pushing) is covered by `live-prices`, which needs no
-API key at all.
+USDC together: ~110 s … 60 min between pushes (**avg ~28 min**). Ethereum
+mainnet USDC averages ~45 min; mainnet ETH pushes roughly once per 9 h;
+Arbitrum/OP/Polygon push irregularly or not at all — all consistent with
+the documented **1-hour heartbeat / 1 % deviation** push-feed rules. So
+the keyless path alone holds ≤ ~60 min, **not** ≤2 min; the keeper above
+is what delivers the sub-minute window. Reading (not pushing) is covered
+by `live-prices`, which needs no API key at all.
 
 ---
 
@@ -539,7 +574,7 @@ forge test                 # 136/136 (fork suite needs internet access)
 
 cd ../../avenge-rs
 cp .env.example .env
-cargo test                 # 10/10
+cargo test                 # 14/14
 ```
 
 ### 3. Deploy locally
@@ -556,6 +591,16 @@ cargo run -- deploy-local  # Terminal 2
 RPC_URL=http://127.0.0.1:8545 HOOK_ADDRESS=<deployed> cargo run -- monitor
 RPC_URL=http://127.0.0.1:8545 HOOK_ADDRESS=<deployed> cargo run -- simulate 1.0 true
 ```
+
+### 5. Feed live prices (keeper)
+
+```bash
+cargo run -- keeper       # needs PYTH_API_KEY + DEPLOYMENT_KEY in .env
+```
+
+Polls Hermes every 5 s and publishes fresh signed payloads to the Pyth
+store (measured payload age 0–2 s) — see
+[Price feeding](#price-feeding-hermes-keeper--verified-keyless-replay).
 
 ---
 
@@ -588,7 +633,7 @@ RPC_URL=http://127.0.0.1:8545 HOOK_ADDRESS=<deployed> cargo run -- simulate 1.0 
 | Risk | Mitigation |
 |------|-----------|
 | Oracle manipulation | Capture requires the pool price to sit **outside** Pyth's confidence band **and** deviate ≥ 2%; low-confidence prices widen the band and suppress triggers |
-| Stale prices | `stalenessThreshold` (live: 30 d) — stale/invalid prices make the hook pass every swap through |
+| Stale prices | `stalenessThreshold` (live: **60 s**, kept fresh by `keeper`) — stale/invalid prices make the hook pass every swap through |
 | Reentrancy | No guard is used: the hook only calls `PoolManager` (trusted) and Pyth (staticcall), and completes take/donate/settle inside a single `beforeSwap`/`afterSwap` frame. *(An earlier "nonce-based reentrancy guard" claim was not in the code and has been removed.)* |
 | Swapper griefing | Fail-open on every error path; capture clamped to 50% of input (`MAX_CAPTURE_BPS`); `int128` range checked; empty pools skipped |
 | Fee-override scope | The 0.30% override only applies to **dynamic-fee** pools; static-fee pools keep their configured fee (documented, not silently broken) |
