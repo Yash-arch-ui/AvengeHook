@@ -151,7 +151,7 @@ contract DetoxHook is BaseHook {
 
     // State
     uint256 public rhoBps;                 // = CAPTURE_RATE * 100 = 7000 (owner-tunable)
-    uint256 public stalenessThreshold;     // owner-tunable (live: 30 days)
+    uint256 public stalenessThreshold;     // owner-tunable (live: 60 s)
     address public owner;
     IPyth   public pythOracle;
     mapping(Currency => bytes32) public pythPriceIds;
@@ -381,7 +381,7 @@ cd avenge-rs && cargo test
 | `MAX_CAPTURE_BPS` | `5000` (50%) | Hard cap: capture can never exceed half of the swap input |
 | `ARB_FEE_PIPS` | `3000` (0.30%) | LP fee charged on a detected arb (dynamic pools only) |
 | `NORMAL_FEE_PIPS` | `500` (0.05%) | Base LP fee for dynamic pools |
-| `stalenessThreshold` | owner-set; live `2592000` s (30 d) | Oracle freshness limit (owner-tunable) |
+| `stalenessThreshold` | owner-set; live `60` s | Oracle freshness limit (owner-tunable) |
 | `BASIS_POINTS` | `10000` | 100% |
 
 > Fee units: Uniswap V4 LP fees are **pips** — `1e6 = 100%`. So `3000` is **0.30%**, not 30%.
@@ -461,7 +461,7 @@ CURRENCY1_DECIMALS=6
 **Deployment verified end-to-end (2026-09-27):**
 
 - Fresh hook build: full parameter getters (`rhoBps` 7000, `lpDonateBps` 8000, `arbFeePips` 3000, `normalFeePips` 500) and the `beforeDonate` flag, so third-party `poolManager.donate()` works.
-- `oracle` reports **both feeds valid** — `stalenessThreshold` is set to **2 592 000 s (30 days)** because all Pyth Hermes endpoints have required an API key since the Pyth Core upgrade (2026-08-26) and the feeds are only updated sporadically by third parties. Re-tighten with `cargo run -- update-params 7000 604800` once a fresh feed is wired up.
+- `stalenessThreshold` is back to the original **60 s** window (owner tx `0xdba3c427…`). All Pyth Hermes price endpoints have required an API key since the Pyth Core upgrade (2026-08-26) and no keeper is wired up yet, so both feeds are currently older than 60 s: `oracle` reports `valid: false` and the hook **fails open** (passes swaps untouched) until fresh prices are pushed. The verified capture below was produced while the window was temporarily widened.
 - Live interference capture: tx [`0x85dd8e54…61490`](https://arbitrum-sepolia.blockscout.com/tx/0x85dd8e54fa2078b35fb8b0588f4ae49729ec30cccdb66c5179b1d09a96f61490) swapped 1 USDC → the hook detected the band deviation, emitted the capture event (`hookShare = 55119`, `opportunity = 78742`, exactly matching `simulate`), donated to LPs, applied the 0.30% override fee, and retained 11 024 units for the owner (`getAccumulatedTokens > 0`).
 - Both pools hold liquidity (1.3e12 in the active range) and return the exact initialization prices through `slot0`.
 
@@ -548,7 +548,7 @@ RPC_URL=http://127.0.0.1:8545 HOOK_ADDRESS=<deployed> cargo run -- simulate 1.0 
 | Risk | Mitigation |
 |------|-----------|
 | Oracle manipulation | Capture requires the pool price to sit **outside** Pyth's confidence band **and** deviate ≥ 2%; low-confidence prices widen the band and suppress triggers |
-| Stale prices | `stalenessThreshold` (live: 30 d) — stale/invalid prices make the hook pass every swap through |
+| Stale prices | `stalenessThreshold` (live: 60 s) — stale/invalid prices make the hook pass every swap through |
 | Reentrancy | No guard is used: the hook only calls `PoolManager` (trusted) and Pyth (staticcall), and completes take/donate/settle inside a single `beforeSwap`/`afterSwap` frame. *(An earlier "nonce-based reentrancy guard" claim was not in the code and has been removed.)* |
 | Swapper griefing | Fail-open on every error path; capture clamped to 50% of input (`MAX_CAPTURE_BPS`); `int128` range checked; empty pools skipped |
 | Fee-override scope | The 0.30% override only applies to **dynamic-fee** pools; static-fee pools keep their configured fee (documented, not silently broken) |
