@@ -61,3 +61,6 @@ avenge-hook/packages/foundry/HOOKMINER_INTEGRATION.md
 avenge-hook/.gitmodules
 avenge-hook/packages/nextjs/
 avenge-hook/packages/ponder/
+
+# Local study notes (not for the repo)
+/RUST_ORDER.md
