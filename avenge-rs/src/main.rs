@@ -3,6 +3,7 @@ mod deploy;
 mod hook;
 mod monitor;
 mod pyth;
+mod pyth_live;
 use ethers::types::{Address, H256, I256, U256};
 use eyre::Result;
 
@@ -14,6 +15,7 @@ async fn main() -> Result<()> {
     match command {
         "monitor" => cmd_monitor().await,
         "prices" => cmd_prices().await,
+        "live-prices" => cmd_live_prices().await,
         "state" => cmd_state().await,
         "params" => cmd_params().await,
         "oracle" => cmd_oracle().await,
@@ -46,6 +48,7 @@ Usage: detox-rs <COMMAND>
 Commands:
   monitor          Watch for all DetoxHook events (real-time)
   prices           Fetch current Pyth oracle prices
+  live-prices      Keyless on-chain Pyth reader (RPC HTTP/WS, no API keys)
   state            Read on-chain hook state (owner, params, accumulated tokens)
   params           Show current hook parameters
   oracle           Get oracle prices with confidence from the hook contract
@@ -130,6 +133,71 @@ async fn cmd_prices() -> Result<()> {
     Ok(())
 }
 
+/// Keyless on-chain Pyth price loop: reads `getPriceUnsafe` straight over the
+/// RPC endpoint (HTTP or WS auto-detected from RPC_URL). No Hermes, no API keys.
+/// Prints both feeds plus freshness against the hook's configured staleness.
+async fn cmd_live_prices() -> Result<()> {
+    use std::time::Duration;
+
+    let cfg = config::Config::load()?;
+    let provider = pyth_live::connect(&cfg.rpc_url).await?;
+    let reader = provider.reader(cfg.pyth_address);
+
+    // Freshness window comes from the live hook itself (rho/staleness params)
+    let (_, staleness, _) = hook::get_parameters(cfg.hook_address, &cfg.rpc_url).await?;
+    let max_age = staleness.as_u64();
+
+    let interval_ms: u64 = std::env::var("LIVE_PRICES_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000);
+    let max_ticks: u64 = std::env::var("LIVE_PRICES_TICKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(u64::MAX);
+
+    println!(
+        "=== On-Chain Pyth Prices (keyless, {} RPC) ===\n  pyth: {:?}  staleness: {}s  interval: {}ms\n",
+        provider.kind(),
+        cfg.pyth_address,
+        max_age,
+        interval_ms
+    );
+    println!(
+        "{:<8} {:>14} {:>22} {:>10} {:>8} {:>10} {:>7} {:>9}",
+        "feed", "price", "price@1e8 (LP units)", "conf", "expo", "age_s", "fresh", "rpc_ms"
+    );
+
+    let mut tick: u64 = 0;
+    loop {
+        let t0 = std::time::Instant::now();
+        let (eth, usdc) = tokio::join!(reader.eth_usd(), reader.usdc_usd());
+        let (eth, usdc) = (eth?, usdc?);
+        let rpc_ms = t0.elapsed().as_millis();
+
+        for (name, p) in [("ETH/USD", &eth), ("USDC/USD", &usdc)] {
+            println!(
+                "{:<8} {:>14.6} {:>22} {:>10.6} {:>8} {:>10} {:>7} {:>9}",
+                name,
+                p.to_f64(),
+                p.to_u1e8()?,
+                p.conf_f64(),
+                p.expo,
+                p.age_secs().max(0),
+                p.is_fresh(max_age),
+                rpc_ms
+            );
+        }
+        println!();
+
+        tick += 1;
+        if tick >= max_ticks {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+    }
+}
+
 async fn cmd_state() -> Result<()> {
     let cfg = config::Config::load()?;
 
@@ -142,13 +210,8 @@ async fn cmd_state() -> Result<()> {
     let pyth = hook::get_pyth_oracle(cfg.hook_address, &cfg.rpc_url).await?;
     println!("Pyth oracle:  {:?}", pyth);
 
-    let (rho, staleness, lp_donate) =
-        hook::get_parameters(cfg.hook_address, &cfg.rpc_url).await?;
-    println!(
-        "rhoBps:       {} ({}%)",
-        rho,
-        rho.as_u64() as f64 / 100.0
-    );
+    let (rho, staleness, lp_donate) = hook::get_parameters(cfg.hook_address, &cfg.rpc_url).await?;
+    println!("rhoBps:       {} ({}%)", rho, rho.as_u64() as f64 / 100.0);
     println!("staleness:    {}s", staleness);
     println!(
         "lpDonateBps:  {} ({}%)",
@@ -159,18 +222,18 @@ async fn cmd_state() -> Result<()> {
     // Per-pool accumulators (POOL_ID env, defaults to the ETH/USDC 0.05% pool)
     let pool_id = cfg.pool_id;
     let eth_addr = Address::zero();
-    let acc_eth = hook::get_accumulated_tokens(cfg.hook_address, &cfg.rpc_url, pool_id, eth_addr).await?;
+    let acc_eth =
+        hook::get_accumulated_tokens(cfg.hook_address, &cfg.rpc_url, pool_id, eth_addr).await?;
     println!("Pool ID:         0x{}", hex::encode(pool_id));
     println!("Accumulated ETH: {} wei", acc_eth);
 
-    let acc_usdc = hook::get_accumulated_tokens(
-        cfg.hook_address,
-        &cfg.rpc_url,
-        pool_id,
-        cfg.usdc_address,
-    )
-    .await?;
-    println!("Accumulated USDC ({}): {} raw units", cfg.usdc_address, acc_usdc);
+    let acc_usdc =
+        hook::get_accumulated_tokens(cfg.hook_address, &cfg.rpc_url, pool_id, cfg.usdc_address)
+            .await?;
+    println!(
+        "Accumulated USDC ({}): {} raw units",
+        cfg.usdc_address, acc_usdc
+    );
 
     // Check price IDs
     let eth_price_id = hook::get_pyth_price_id(cfg.hook_address, &cfg.rpc_url, eth_addr).await?;
@@ -185,8 +248,7 @@ async fn cmd_state() -> Result<()> {
 
 async fn cmd_params() -> Result<()> {
     let cfg = config::Config::load()?;
-    let (rho, staleness, lp_donate) =
-        hook::get_parameters(cfg.hook_address, &cfg.rpc_url).await?;
+    let (rho, staleness, lp_donate) = hook::get_parameters(cfg.hook_address, &cfg.rpc_url).await?;
 
     println!("rhoBps:          {}", rho);
     println!("stalenessThreshold: {}s", staleness);
@@ -244,18 +306,42 @@ async fn cmd_permissions() -> Result<()> {
     println!("=== Hook Permissions ===\n");
     println!("beforeInitialize:              {}", perms.before_initialize);
     println!("afterInitialize:               {}", perms.after_initialize);
-    println!("beforeAddLiquidity:            {}", perms.before_add_liquidity);
-    println!("beforeRemoveLiquidity:         {}", perms.before_remove_liquidity);
-    println!("afterAddLiquidity:             {}", perms.after_add_liquidity);
-    println!("afterRemoveLiquidity:          {}", perms.after_remove_liquidity);
+    println!(
+        "beforeAddLiquidity:            {}",
+        perms.before_add_liquidity
+    );
+    println!(
+        "beforeRemoveLiquidity:         {}",
+        perms.before_remove_liquidity
+    );
+    println!(
+        "afterAddLiquidity:             {}",
+        perms.after_add_liquidity
+    );
+    println!(
+        "afterRemoveLiquidity:          {}",
+        perms.after_remove_liquidity
+    );
     println!("beforeSwap:                    {}", perms.before_swap);
     println!("afterSwap:                     {}", perms.after_swap);
     println!("beforeDonate:                  {}", perms.before_donate);
     println!("afterDonate:                   {}", perms.after_donate);
-    println!("beforeSwapReturnDelta:         {}", perms.before_swap_return_delta);
-    println!("afterSwapReturnDelta:          {}", perms.after_swap_return_delta);
-    println!("afterAddLiquidityReturnDelta:  {}", perms.after_add_liquidity_return_delta);
-    println!("afterRemoveLiquidityReturnDelta: {}", perms.after_remove_liquidity_return_delta);
+    println!(
+        "beforeSwapReturnDelta:         {}",
+        perms.before_swap_return_delta
+    );
+    println!(
+        "afterSwapReturnDelta:          {}",
+        perms.after_swap_return_delta
+    );
+    println!(
+        "afterAddLiquidityReturnDelta:  {}",
+        perms.after_add_liquidity_return_delta
+    );
+    println!(
+        "afterRemoveLiquidityReturnDelta: {}",
+        perms.after_remove_liquidity_return_delta
+    );
 
     Ok(())
 }
@@ -267,11 +353,14 @@ async fn cmd_simulate() -> Result<()> {
     println!("=== Simulate Swap on DetoxHook ===\n");
 
     // Read hook state
-    let (rho, staleness, lp_donate) =
-        hook::get_parameters(cfg.hook_address, &cfg.rpc_url).await?;
+    let (rho, staleness, lp_donate) = hook::get_parameters(cfg.hook_address, &cfg.rpc_url).await?;
     println!("rhoBps: {} ({}%)", rho, rho.as_u64() as f64 / 100.0);
     println!("staleness: {}s", staleness);
-    println!("lpDonateBps: {} ({}%)", lp_donate, lp_donate.as_u64() as f64 / 100.0);
+    println!(
+        "lpDonateBps: {} ({}%)",
+        lp_donate,
+        lp_donate.as_u64() as f64 / 100.0
+    );
 
     // Read oracle prices
     let eth_addr = Address::zero();
@@ -332,10 +421,18 @@ async fn cmd_simulate() -> Result<()> {
     let currency1 = env_address("CURRENCY1", cfg.usdc_address)?;
     // Defaults match the live ETH/USDC Pool 1 (POOL_ID=0x5771f78e...):
     // dynamic fee 8388608, tickSpacing 30
-    let fee: u32 = std::env::var("POOL_FEE").unwrap_or_else(|_| "8388608".into()).parse()?;
-    let tick_spacing: i32 = std::env::var("TICK_SPACING").unwrap_or_else(|_| "30".into()).parse()?;
-    let decimals0: u32 = std::env::var("CURRENCY0_DECIMALS").unwrap_or_else(|_| "18".into()).parse()?;
-    let decimals1: u32 = std::env::var("CURRENCY1_DECIMALS").unwrap_or_else(|_| "6".into()).parse()?;
+    let fee: u32 = std::env::var("POOL_FEE")
+        .unwrap_or_else(|_| "8388608".into())
+        .parse()?;
+    let tick_spacing: i32 = std::env::var("TICK_SPACING")
+        .unwrap_or_else(|_| "30".into())
+        .parse()?;
+    let decimals0: u32 = std::env::var("CURRENCY0_DECIMALS")
+        .unwrap_or_else(|_| "18".into())
+        .parse()?;
+    let decimals1: u32 = std::env::var("CURRENCY1_DECIMALS")
+        .unwrap_or_else(|_| "6".into())
+        .parse()?;
 
     let (input_currency, input_decimals) = if zero_for_one {
         (currency0, decimals0)
@@ -352,7 +449,8 @@ async fn cmd_simulate() -> Result<()> {
     let sqrt_price_limit_x96 = if zero_for_one {
         U256::from(4295128740u64) // TickMath.MIN_SQRT_PRICE + 1
     } else {
-        U256::from_dec_str("1461446703485210103287273052203988822378723970341")? // MAX_SQRT_PRICE - 1
+        U256::from_dec_str("1461446703485210103287273052203988822378723970341")?
+        // MAX_SQRT_PRICE - 1
     };
 
     let key = hook::PoolKey {
@@ -382,7 +480,10 @@ async fn cmd_simulate() -> Result<()> {
         zero_for_one, amount_specified, amount_in, input_symbol
     );
     println!("input currency:      {:?}", input_currency);
-    println!("arbitrageOpp:        {} (input currency units)", arbitrage_opp);
+    println!(
+        "arbitrageOpp:        {} (input currency units)",
+        arbitrage_opp
+    );
     println!(
         "hookShare:           {} (rhoBps={} -> {:.2}% of opportunity)",
         hook_share,
@@ -393,9 +494,7 @@ async fn cmd_simulate() -> Result<()> {
     println!("outsideConfBand:     {}", outside_band);
     println!(
         "hint:                {} {} in {} raw units",
-        input_symbol,
-        amount_in,
-        amount_raw
+        input_symbol, amount_in, amount_raw
     );
 
     Ok(())
@@ -418,7 +517,10 @@ async fn cmd_update_params() -> Result<()> {
     let rho_bps: u64 = args[2].parse()?;
     let staleness: u64 = args[3].parse()?;
 
-    println!("Updating parameters: rhoBps={}, staleness={}s", rho_bps, staleness);
+    println!(
+        "Updating parameters: rhoBps={}, staleness={}s",
+        rho_bps, staleness
+    );
     let receipt = hook::update_parameters(
         cfg.hook_address,
         &cfg.rpc_url,
