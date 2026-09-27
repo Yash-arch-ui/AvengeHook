@@ -461,9 +461,47 @@ CURRENCY1_DECIMALS=6
 **Deployment verified end-to-end (2026-09-27):**
 
 - Fresh hook build: full parameter getters (`rhoBps` 7000, `lpDonateBps` 8000, `arbFeePips` 3000, `normalFeePips` 500) and the `beforeDonate` flag, so third-party `poolManager.donate()` works.
-- `stalenessThreshold` is temporarily widened to **30 d** (`2592000` s, owner tx `0x7d8bb35c…`) because all Pyth Hermes price endpoints require a paid API key since the Pyth Core upgrade (2026-08-26) and no price pusher is wired up. The on-chain store is currently ~2 d (ETH) / ~13 d (USDC) old, so a 60 s window kept both feeds `valid: false` and the hook permanently fail-open. With the 30 d window `oracle` reports `valid: true` for both feeds and `simulate` returns `shouldInterfere: true` in the arb direction. **Demo-only trade-off:** the hook now acts on days-old oracle data; restore a tight window (60 s) once a paid Hermes key or an alternative price pusher exists.
+- `stalenessThreshold` is temporarily widened to **30 d** (`2592000` s, owner tx `0x7d8bb35c…`) because all Pyth Hermes price endpoints require a paid API key since the Pyth Core upgrade (2026-08-26) and no automated keeper is running yet, so a 60 s window kept both feeds `valid: false` and the hook permanently fail-open. With the 30 d window `oracle` reports `valid: true` for both feeds and `simulate` returns `shouldInterfere: true` in the arb direction. **Demo-only trade-off:** the hook now acts on days-old oracle data unless payload replays are made; see [Keyless price feeding](#keyless-price-feeding-verified-payload-replay) — verified replays hold prices under ~1–2 min, after which the window can return to 60 s.
 - Live interference capture: tx [`0x85dd8e54…61490`](https://arbitrum-sepolia.blockscout.com/tx/0x85dd8e54fa2078b35fb8b0588f4ae49729ec30cccdb66c5179b1d09a96f61490) swapped 1 USDC → the hook detected the band deviation, emitted the capture event (`hookShare = 55119`, `opportunity = 78742`, exactly matching `simulate`), donated to LPs, applied the 0.30% override fee, and retained 11 024 units for the owner (`getAccumulatedTokens > 0`).
 - Both pools hold liquidity (1.3e12 in the active range) and return the exact initialization prices through `slot0`.
+
+---
+
+## Keyless price feeding (verified: payload replay)
+
+All Hermes endpoints have required a paid API key since the Pyth Core
+upgrade (2026-08-26). Pyth payloads are **chain-agnostic within a contract
+generation** — every Core contract was upgraded in place that day, so a
+payload published on one chain verifies on any other chain's store.
+
+**How it works:** scrape the calldata of any live `updatePriceFeeds` /
+`updatePriceFeedsIfNecessary` transaction on a busy chain (Ethereum
+mainnet, Base), extract the `bytes[]` payload, and replay it into our
+Sepolia store with `updatePriceFeeds(bytes[])`. The attached fee is
+**10–80 wei**; without it the call reverts `InsufficientFee()` — with it,
+every replay has succeeded.
+
+**Verified replays (2026-09-27, all status 1):**
+
+| Source payload | Replay tx | Result |
+|---|---|---|
+| mainnet USDC | `0xf20a752c…7fe6` | 13.3 d → ~1 h old |
+| mainnet ETH | `0x47afa57a…4031` | 2 d → ~6 h old |
+| mainnet USDC (freshest) | `0x1d880c3d…47cb` | → ~11 min old |
+| Base batch ETH+USDC | `0xc5e6dc9f…67e0` | → ~59 min old |
+| Base batch ETH+USDC | `0x368355de…f674` | → **84 s old** |
+
+After the last replay both feeds read `valid: true` with sub-minute age
+and `simulate … shouldInterfere: true` in the arb direction.
+
+**Source ranking (measured):** Base (`0xbC16…272F5`, free RPC
+`mainnet.base.org`) is best — 2 s blocks, batch payloads carrying ETH and
+USDC together, pushed within seconds of publish. Ethereum mainnet USDC is
+frequent; mainnet ETH and Arbitrum/OP/Polygon push irregularly or not at
+all. A keeper polling Base every ~5 s and replaying can hold prices under
+~1–2 min continuously, at which point `stalenessThreshold` can return to
+60 s. Reading (not pushing) is covered by `live-prices`, which needs no
+API key at all.
 
 ---
 
