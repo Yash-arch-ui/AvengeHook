@@ -56,3 +56,8 @@ detox-hook/packages/foundry/DEPLOYMENT_ANALYSIS.md
 detox-hook/packages/foundry/DEPLOYMENT_SWAPROUTER.md
 detox-hook/packages/foundry/DETOX_HOOK_DEPLOYMENT.md
 detox-hook/packages/foundry/HOOKMINER_INTEGRATION.md
+
+# detox-hook: stale/generated tooling (never tracked)
+detox-hook/.gitmodules
+detox-hook/packages/nextjs/
+detox-hook/packages/ponder/
