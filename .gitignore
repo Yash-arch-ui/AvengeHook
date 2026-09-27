@@ -1,6 +1,7 @@
 # Rust
 Cargo.lock
 /target/
+avenge-rs/target/
 
 # Solidity build artifacts
 /cache

@@ -1,0 +1,30 @@
+# dependencies
+node_modules
+.env
+packages/foundry/out
+packages/foundry/lib
+packages/foundry/cache
+
+# yarn
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# eslint
+.eslintcache
+
+# misc
+.DS_Store
+
+# IDE
+.vscode
+.idea
+
+# cli
+dist
+
+# temporary
+tmp
