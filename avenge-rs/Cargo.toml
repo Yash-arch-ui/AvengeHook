@@ -1,8 +1,8 @@
 [package]
-name = "detox-rs"
+name = "avenge-rs"
 version = "0.1.0"
 edition = "2021"
-description = "DetoxHook monitor and manager — Rust tooling for Uniswap V4 MEV protection hook"
+description = "AvengeHook monitor and manager — Rust tooling for Uniswap V4 MEV protection hook"
 
 [dependencies]
 ethers = { version = "2.0", features = ["abigen", "ws", "rustls"] }

@@ -2,14 +2,14 @@ use ethers::types::Address;
 use eyre::Result;
 use std::process::Command;
 
-/// Deploy DetoxHook by calling the Foundry script.
+/// Deploy AvengeHook by calling the Foundry script.
 pub fn deploy_hook(
     forge_dir: &str,
     rpc_url: &str,
     private_key: &str,
     chain_id: u64,
 ) -> Result<DeployResult> {
-    println!("=== Deploying DetoxHook via Forge ===");
+    println!("=== Deploying AvengeHook via Forge ===");
     println!("Chain ID: {}", chain_id);
     println!("RPC: {}", rpc_url);
     println!("Forge dir: {}", forge_dir);
@@ -17,7 +17,7 @@ pub fn deploy_hook(
     let output = Command::new("forge")
         .args([
             "script",
-            "script/DeployDetoxHook.s.sol:DeployDetoxHook",
+            "script/DeployAvengeHook.s.sol:DeployAvengeHook",
             "--rpc-url",
             rpc_url,
             "--private-key",
@@ -59,7 +59,7 @@ pub fn deploy_local(forge_dir: &str) -> Result<DeployResult> {
     let output = Command::new("forge")
         .args([
             "script",
-            "script/DeployDetoxHook.s.sol:DeployDetoxHook",
+            "script/DeployAvengeHook.s.sol:DeployAvengeHook",
             "--rpc-url",
             "http://127.0.0.1:8545",
             "--broadcast",
@@ -88,7 +88,7 @@ pub fn deploy_local(forge_dir: &str) -> Result<DeployResult> {
 
 /// Run the Forge test suite.
 pub fn run_tests(forge_dir: &str) -> Result<bool> {
-    println!("=== Running DetoxHook Tests ===");
+    println!("=== Running AvengeHook Tests ===");
 
     let output = Command::new("forge")
         .args(["test", "-vvv"])
@@ -115,7 +115,7 @@ pub struct DeployResult {
 /// Try to parse a hook address from forge output.
 fn parse_deployed_address(output: &str) -> Option<Address> {
     for line in output.lines() {
-        if line.contains("deployed at:") || line.contains("DetoxHook deployed at:") {
+        if line.contains("deployed at:") || line.contains("AvengeHook deployed at:") {
             let parts: Vec<&str> = line.split("0x").collect();
             if parts.len() > 1 {
                 let hex_str = parts

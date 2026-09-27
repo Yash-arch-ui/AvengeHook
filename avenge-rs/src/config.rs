@@ -1,11 +1,11 @@
 use ethers::types::Address;
 use std::env;
 
-/// All configuration for detox-rs, loaded from environment variables.
+/// All configuration for avenge-rs, loaded from environment variables.
 pub struct Config {
     /// RPC endpoint (HTTP or WebSocket)
     pub rpc_url: String,
-    /// DetoxHook contract address
+    /// AvengeHook contract address
     pub hook_address: Address,
     /// Pyth oracle address (for off-chain price checks)
     pub pyth_address: Address,
@@ -57,22 +57,22 @@ impl Config {
             .unwrap_or_else(|_| "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d".into())
             .parse()?;
 
-        // FORGE_DIR: where the Foundry project lives (detox-hook/packages/foundry)
-        // Try env var first, then look for detox-hook/packages/foundry relative to cwd
+        // FORGE_DIR: where the Foundry project lives (avenge-hook/packages/foundry)
+        // Try env var first, then look for avenge-hook/packages/foundry relative to cwd
         let forge_dir = env::var("FORGE_DIR").unwrap_or_else(|_| {
             let cwd = std::env::current_dir().unwrap_or_default();
             // Check common locations
             let candidates = [
-                cwd.join("detox-hook/packages/foundry"),
-                cwd.join("../detox-hook/packages/foundry"),
-                cwd.join("../../detox-hook/packages/foundry"),
+                cwd.join("avenge-hook/packages/foundry"),
+                cwd.join("../avenge-hook/packages/foundry"),
+                cwd.join("../../avenge-hook/packages/foundry"),
             ];
             for c in &candidates {
                 if c.join("foundry.toml").exists() {
                     return c.to_string_lossy().to_string();
                 }
             }
-            eprintln!("WARNING: FORGE_DIR not set and detox-hook/packages/foundry not found");
+            eprintln!("WARNING: FORGE_DIR not set and avenge-hook/packages/foundry not found");
             eprintln!("  Set FORGE_DIR in .env or run from the workspace root");
             "packages/foundry".to_string()
         });

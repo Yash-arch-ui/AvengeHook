@@ -24,40 +24,40 @@ avenge-rs/target/
 .DS_Store
 Thumbs.db
 
-# detox-hook: only track core Foundry project, exclude npm/yarn bot tooling
-detox-hook/node_modules/
-detox-hook/.yarn/
-detox-hook/.husky/
-detox-hook/.github/
-detox-hook/.cursor/
-detox-hook/.cursorrules
-detox-hook/.lintstagedrc.js
-detox-hook/.yarnrc.yml
-detox-hook/package.json
-detox-hook/package-lock.json
-detox-hook/yarn.lock
-detox-hook/load_env.sh
-detox-hook/README.md
-detox-hook/LICENCE
+# avenge-hook: only track core Foundry project, exclude npm/yarn bot tooling
+avenge-hook/node_modules/
+avenge-hook/.yarn/
+avenge-hook/.husky/
+avenge-hook/.github/
+avenge-hook/.cursor/
+avenge-hook/.cursorrules
+avenge-hook/.lintstagedrc.js
+avenge-hook/.yarnrc.yml
+avenge-hook/package.json
+avenge-hook/package-lock.json
+avenge-hook/yarn.lock
+avenge-hook/load_env.sh
+avenge-hook/README.md
+avenge-hook/LICENCE
 
 # Foundry build artifacts (regenerated via forge build)
-detox-hook/packages/foundry/cache/
-detox-hook/packages/foundry/out/
-detox-hook/packages/foundry/broadcast/
-detox-hook/packages/foundry/deployments/
-detox-hook/packages/foundry/lib/
-detox-hook/packages/foundry/scripts-js/
-detox-hook/packages/foundry/.prettier.json
-detox-hook/packages/foundry/.gitignore
-detox-hook/packages/foundry/env.example
-detox-hook/packages/foundry/package.json
-detox-hook/packages/foundry/DEPLOYMENT.md
-detox-hook/packages/foundry/DEPLOYMENT_ANALYSIS.md
-detox-hook/packages/foundry/DEPLOYMENT_SWAPROUTER.md
-detox-hook/packages/foundry/DETOX_HOOK_DEPLOYMENT.md
-detox-hook/packages/foundry/HOOKMINER_INTEGRATION.md
+avenge-hook/packages/foundry/cache/
+avenge-hook/packages/foundry/out/
+avenge-hook/packages/foundry/broadcast/
+avenge-hook/packages/foundry/deployments/
+avenge-hook/packages/foundry/lib/
+avenge-hook/packages/foundry/scripts-js/
+avenge-hook/packages/foundry/.prettier.json
+avenge-hook/packages/foundry/.gitignore
+avenge-hook/packages/foundry/env.example
+avenge-hook/packages/foundry/package.json
+avenge-hook/packages/foundry/DEPLOYMENT.md
+avenge-hook/packages/foundry/DEPLOYMENT_ANALYSIS.md
+avenge-hook/packages/foundry/DEPLOYMENT_SWAPROUTER.md
+avenge-hook/packages/foundry/AVENGE_HOOK_DEPLOYMENT.md
+avenge-hook/packages/foundry/HOOKMINER_INTEGRATION.md
 
-# detox-hook: stale/generated tooling (never tracked)
-detox-hook/.gitmodules
-detox-hook/packages/nextjs/
-detox-hook/packages/ponder/
+# avenge-hook: stale/generated tooling (never tracked)
+avenge-hook/.gitmodules
+avenge-hook/packages/nextjs/
+avenge-hook/packages/ponder/

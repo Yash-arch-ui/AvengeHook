@@ -43,12 +43,12 @@ async fn main() -> Result<()> {
 
 fn print_help() {
     println!(
-        r#"detox-rs — DetoxHook monitor and manager
+        r#"avenge-rs — AvengeHook monitor and manager
 
-Usage: detox-rs <COMMAND>
+Usage: avenge-rs <COMMAND>
 
 Commands:
-  monitor          Watch for all DetoxHook events (real-time)
+  monitor          Watch for all AvengeHook events (real-time)
   prices           Fetch current Pyth oracle prices
   live-prices      Keyless on-chain Pyth reader (RPC HTTP/WS, no API keys)
   keeper [interval_secs] [max_polls]
@@ -63,14 +63,14 @@ Commands:
   update-params    Update rhoBps and staleness (owner only)
   set-price-id     Set Pyth price ID for a currency (owner only)
   withdraw         Withdraw accumulated ETH or ERC20 (owner only)
-  deploy           Deploy DetoxHook via Forge (requires DEPLOYMENT_KEY)
+  deploy           Deploy AvengeHook via Forge (requires DEPLOYMENT_KEY)
   deploy-local     Deploy to local Anvil for testing
   test             Run Forge test suite
   help             Show this message
 
 Environment variables (set in .env):
   RPC_URL          Ethereum RPC endpoint (HTTP or WSS)
-  HOOK_ADDRESS     DetoxHook contract address
+  HOOK_ADDRESS     AvengeHook contract address
   PYTH_ADDRESS     Pyth oracle address
   PYTH_API_KEY     Hermes API key for `keeper` (free trial at pythdata.app)
   CHAIN_ID         Chain ID (default: 421614 = Arbitrum Sepolia)
@@ -214,7 +214,7 @@ async fn cmd_live_prices() -> Result<()> {
 async fn cmd_state() -> Result<()> {
     let cfg = config::Config::load()?;
 
-    println!("=== DetoxHook State ===\n");
+    println!("=== AvengeHook State ===\n");
     println!("Hook address: {:?}", cfg.hook_address);
 
     let owner = hook::get_owner(cfg.hook_address, &cfg.rpc_url).await?;
@@ -363,7 +363,7 @@ async fn cmd_simulate() -> Result<()> {
     let cfg = config::Config::load()?;
     let args: Vec<String> = std::env::args().collect();
 
-    println!("=== Simulate Swap on DetoxHook ===\n");
+    println!("=== Simulate Swap on AvengeHook ===\n");
 
     // Read hook state
     let (rho, staleness, lp_donate) = hook::get_parameters(cfg.hook_address, &cfg.rpc_url).await?;
@@ -421,7 +421,7 @@ async fn cmd_simulate() -> Result<()> {
     }
 
     // --- On-chain simulation -------------------------------------------------
-    // Usage: detox-rs simulate [amountIn] [zeroForOne]
+    // Usage: avenge-rs simulate [amountIn] [zeroForOne]
     //   amountIn   : input amount in whole tokens (default 1.0)
     //   zeroForOne : true = sell currency0, false = sell currency1
     let amount_in: f64 = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(1.0);
@@ -521,7 +521,7 @@ async fn cmd_update_params() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!("Usage: detox-rs update-params <rhoBps> <stalenessThreshold>");
+        eprintln!("Usage: avenge-rs update-params <rhoBps> <stalenessThreshold>");
         eprintln!("  rhoBps:  hook share in basis points (0-10000)");
         eprintln!("  staleness: oracle staleness limit in seconds");
         std::process::exit(1);
@@ -554,7 +554,7 @@ async fn cmd_set_price_id() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!("Usage: detox-rs set-price-id <currency> <priceIdHex>");
+        eprintln!("Usage: avenge-rs set-price-id <currency> <priceIdHex>");
         eprintln!("  currency:   token address (use 0x0000...0000 for ETH)");
         eprintln!("  priceIdHex: Pyth price ID as hex (0x...)");
         std::process::exit(1);
@@ -589,7 +589,7 @@ async fn cmd_withdraw() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 5 {
-        eprintln!("Usage: detox-rs withdraw <poolIdHex> <currency> <amount> <recipient>");
+        eprintln!("Usage: avenge-rs withdraw <poolIdHex> <currency> <amount> <recipient>");
         eprintln!("  poolIdHex:  pool ID as hex (0x...)");
         eprintln!("  currency:   token address (use 0x0000...0000 for ETH)");
         eprintln!("  amount:     amount in wei");

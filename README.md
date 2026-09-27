@@ -7,9 +7,9 @@
 [![Pyth Network](https://img.shields.io/badge/Oracle-Pyth%20Network-6C5CE7.svg)](https://pyth.network/)
 [![Rust](https://img.shields.io/badge/Tooling-Rust-CE422B.svg)](https://www.rust-lang.org/)
 [![Arbitrum](https://img.shields.io/badge/Deployed-Arbitrum%20Sepolia-28A0F0.svg)](https://arbitrum.io/)
-[![Tests](https://img.shields.io/badge/Solidity%20tests-136%20%2F%20136-42ba76.svg)](./detox-hook/packages/foundry)
+[![Tests](https://img.shields.io/badge/Solidity%20tests-136%20%2F%20136-42ba76.svg)](./avenge-hook/packages/foundry)
 
-> **Naming in this repo:** the product is **AvengeHook**, the hook contract is [`DetoxHook.sol`](./detox-hook/packages/foundry/src/DetoxHook.sol), and the Rust CLI is **`detox-rs`** in [`avenge-rs/`](./avenge-rs).
+> **Naming in this repo:** the product is **AvengeHook**, the hook contract is [`AvengeHook.sol`](./avenge-hook/packages/foundry/src/AvengeHook.sol), and the Rust CLI is **`avenge-rs`** in [`avenge-rs/`](./avenge-rs).
 
 ---
 
@@ -89,7 +89,7 @@ ARBITRAGEBOT/
 ├── README.md                              # This file
 ├── .gitignore
 │
-├── avenge-rs/                             # Rust CLI (crate: detox-rs)
+├── avenge-rs/                             # Rust CLI (crate: avenge-rs)
 │   ├── Cargo.toml                         # ethers 2.0, tokio, eyre, serde
 │   ├── .env.example                       # Configuration template
 │   └── src/
@@ -102,12 +102,12 @@ ARBITRAGEBOT/
 │       ├── keeper.rs                      # Hermes → store replay loop (keeper) + tests
 │       └── pyth_live.rs                   # keyless on-chain reader (live-prices) + tests
 │
-└── detox-hook/
+└── avenge-hook/
     └── packages/foundry/                  # Foundry project
         ├── foundry.toml                   # solc 0.8.26, cancun, via_ir, 50 runs
         ├── remappings.txt                 # import path aliases
         ├── src/
-        │   ├── DetoxHook.sol              # main hook (594 lines)
+        │   ├── AvengeHook.sol              # main hook (594 lines)
         │   ├── PoolRegistry.sol           # pool registry helper
         │   ├── SwapRouter.sol             # test swap router
         │   ├── SwapRouterFixed.sol
@@ -117,32 +117,32 @@ ARBITRAGEBOT/
         │       ├── HookLibrary.sol        # slot0 / liquidity / price helpers
         │       └── PythLibrary.sol        # Pyth interfaces + MockPyth
         ├── test/                          # 13 suites, 136 tests
-        │   ├── DetoxHookCapture.t.sol     # end-to-end capture flow
+        │   ├── AvengeHookCapture.t.sol     # end-to-end capture flow
         │   ├── ArbitrageLib.t.sol         # pure math unit tests
         │   ├── OracleLib.t.sol            # oracle normalization tests
-        │   ├── DetoxHook.t.sol / Wave1 / Wave2
-        │   ├── DetoxHookArbitrumSepoliaFork.t.sol   # live fork tests
+        │   ├── AvengeHook.t.sol / Wave1 / Wave2
+        │   ├── AvengeHookArbitrumSepoliaFork.t.sol   # live fork tests
         │   └── ...
         └── script/
-            ├── DeployDetoxHook.s.sol              # CREATE2 deployment
-            ├── DeployDetoxHookComplete.s.sol      # deploy + fund + pools + liquidity
+            ├── DeployAvengeHook.s.sol              # CREATE2 deployment
+            ├── DeployAvengeHookComplete.s.sol      # deploy + fund + pools + liquidity
             ├── InitializePools.s.sol              # dynamic-fee pools + base fee
             ├── InitializePoolsWithHook.s.sol      # pools for an existing hook
-            └── FundDetoxHook.s.sol                # hook funding
+            └── FundAvengeHook.s.sol                # hook funding
 ```
 
-> `detox-hook/packages/foundry/lib/` (v4-core, forge-std, OZ, Pyth SDK, …) is **gitignored** — run `forge install` in Quick Start below.
+> `avenge-hook/packages/foundry/lib/` (v4-core, forge-std, OZ, Pyth SDK, …) is **gitignored** — run `forge install` in Quick Start below.
 
 ---
 
 ## Smart Contract Architecture
 
-### `DetoxHook.sol`
+### `AvengeHook.sol`
 
 Inherits Uniswap V4's `BaseHook` (`beforeSwap` + `beforeSwapReturnsDelta` + `beforeDonate`):
 
 ```solidity
-contract DetoxHook is BaseHook {
+contract AvengeHook is BaseHook {
     // Tunables
     uint256 public constant ARBITRAGE_THRESHOLD = 200; // 2% deviation before interfering
     uint256 public constant CAPTURE_RATE        = 70;  // % of opportunity taken by the hook
@@ -185,7 +185,7 @@ contract DetoxHook is BaseHook {
 
 **Safety rails in `_beforeSwap`** (each returns "pass through" instead of reverting): exact-output swaps, invalid/stale oracle prices, zero pool price, no interference below the 2% threshold, capture clamped to `MAX_CAPTURE_BPS`, capture too large for `int128`, and pools with zero liquidity (because `donate()` reverts on an empty pool).
 
-**Settlement accounting** (verified by `DetoxHookCapture.t.sol`): `take(hookShare)` + `donate(lp)` + `settle(lp)` + the `afterSwap` hook delta nets to zero inside the unlock — the hook keeps only `hookKept` (20% of the capture), LPs receive the donated 80%.
+**Settlement accounting** (verified by `AvengeHookCapture.t.sol`): `take(hookShare)` + `donate(lp)` + `settle(lp)` + the `afterSwap` hook delta nets to zero inside the unlock — the hook keeps only `hookKept` (20% of the capture), LPs receive the donated 80%.
 
 ### `ArbitrageLib.sol`
 
@@ -225,7 +225,7 @@ confidence = normalize(p.conf,   p.expo);
 
 Uniswap V4 only honors a `beforeSwap` fee override when `key.fee == LPFeeLibrary.DYNAMIC_FEE_FLAG` (`0x800000`). Therefore:
 
-- Pools created by `InitializePools.s.sol`, `InitializePoolsWithHook.s.sol` and `DeployDetoxHookComplete.s.sol` use `DYNAMIC_FEE_FLAG` and call `hook.setDynamicLPFee(key, 500)` right after `initialize()` (dynamic pools otherwise start at a **0%** LP fee).
+- Pools created by `InitializePools.s.sol`, `InitializePoolsWithHook.s.sol` and `DeployAvengeHookComplete.s.sol` use `DYNAMIC_FEE_FLAG` and call `hook.setDynamicLPFee(key, 500)` right after `initialize()` (dynamic pools otherwise start at a **0%** LP fee).
 - On static-fee pools the 0.30% arb fee is silently ignored — the capture still happens, only the fee override does not.
 - `ARBITRAGE_THRESHOLD`, `rhoBps` and the capture itself are unaffected by this.
 
@@ -233,7 +233,7 @@ Uniswap V4 only honors a `beforeSwap` fee override when `key.fee == LPFeeLibrary
 
 ## Rust CLI Tooling (`avenge-rs`)
 
-`detox-rs` monitors, manages and deploys the hook.
+`avenge-rs` monitors, manages and deploys the hook.
 
 ### Commands
 
@@ -346,7 +346,7 @@ ERC20Withdrawn:     0x7f7a3c8adc2282c3f39a78be1ad8844fb24545a77dd1e1179c41d11e8a
 ### Solidity — 136 / 136 passing (13 suites)
 
 ```bash
-cd detox-hook/packages/foundry
+cd avenge-hook/packages/foundry
 forge test
 ```
 
@@ -354,17 +354,17 @@ forge test
 |-------|:-----:|------------------|
 | `ArbitrageLib.t.sol` | 21 | Price convention, confidence bounds, opportunity math, threshold |
 | `OracleLib.t.sol` | 23 | Pyth normalization, staleness, invalid/zero price handling |
-| `DetoxHookWave1.t.sol` | 13 | Deployment, permissions, params, swaps, accumulators |
-| `DetoxHook.t.sol` | 10 | Parameters, permissions, tracking, owner functions |
-| `DetoxHookWave2.t.sol` | 10 | Arbitrage detection both directions, thresholds, param updates |
-| `DetoxHookCapture.t.sol` | 8 | **End-to-end capture**: take → donate → keep, fee override, caps, stale oracle, external `donate()` |
-| `DetoxHookLocal.t.sol` | 9 | Local Anvil flows |
-| `DetoxHookLocalSimple.t.sol` | 1 | Simplified local flow |
+| `AvengeHookWave1.t.sol` | 13 | Deployment, permissions, params, swaps, accumulators |
+| `AvengeHook.t.sol` | 10 | Parameters, permissions, tracking, owner functions |
+| `AvengeHookWave2.t.sol` | 10 | Arbitrage detection both directions, thresholds, param updates |
+| `AvengeHookCapture.t.sol` | 8 | **End-to-end capture**: take → donate → keep, fee override, caps, stale oracle, external `donate()` |
+| `AvengeHookLocal.t.sol` | 9 | Local Anvil flows |
+| `AvengeHookLocalSimple.t.sol` | 1 | Simplified local flow |
 | `SwapRouter.t.sol` | 8 | Test router integration |
-| `DeployDetoxHookScript.t.sol` | 11 | CREATE2 mining, script helpers, full deploy workflow |
+| `DeployAvengeHookScript.t.sol` | 11 | CREATE2 mining, script helpers, full deploy workflow |
 | `HookMinerTest.t.sol` | 4 | Hook address flag mining |
-| `DetoxHookLive.t.sol` | 7 | Live-address introspection |
-| `DetoxHookArbitrumSepoliaFork.t.sol` | 11 | Fork of Arbitrum Sepolia: real swaps, liquidity, Pyth reads (**needs internet**) |
+| `AvengeHookLive.t.sol` | 7 | Live-address introspection |
+| `AvengeHookArbitrumSepoliaFork.t.sol` | 11 | Fork of Arbitrum Sepolia: real swaps, liquidity, Pyth reads (**needs internet**) |
 
 The fork suite is the only one that touches the network — it hardcodes `https://sepolia-rollup.arbitrum.io/rpc`; everything else runs offline.
 
@@ -403,7 +403,7 @@ RPC_URL=http://127.0.0.1:8545                             # Required
 HOOK_ADDRESS=0xf53c43858D62a1765480508f3bE7481e883380A8   # Required
 PYTH_ADDRESS=0x4374e5a8b9C22271E9EB878A2AA31DE97DF15DAF   # Optional (defaults to Arbitrum Sepolia)
 CHAIN_ID=421614                                           # Default: Arbitrum Sepolia
-FORGE_DIR=./detox-hook/packages/foundry                   # Auto-detected
+FORGE_DIR=./avenge-hook/packages/foundry                   # Auto-detected
 DEPLOYMENT_KEY=0x...                                      # Owner commands + deploy + keeper sends
 PYTH_API_KEY=...                                          # keeper only (free trial: pythdata.app)
 
@@ -556,7 +556,7 @@ git clone https://github.com/Yash-arch-ui/AvengeHook.git
 cd AvengeHook
 
 # lib/ is gitignored — pull the Solidity dependencies
-cd detox-hook/packages/foundry
+cd avenge-hook/packages/foundry
 forge install foundry-rs/forge-std
 forge install OpenZeppelin/openzeppelin-contracts
 forge install gnsps/solidity-bytes-utils
@@ -569,7 +569,7 @@ cd ../../..
 ### 2. Run the tests
 
 ```bash
-cd detox-hook/packages/foundry
+cd avenge-hook/packages/foundry
 forge test                 # 136/136 (fork suite needs internet access)
 
 cd ../../avenge-rs
@@ -621,9 +621,9 @@ store (measured payload age 0–2 s) — see
 ## Gas & Sizing
 
 - **Optimizer:** 50 runs, `via_ir` enabled, `sparse_mode`, `bytecode_hash = "none"`
-- **Deployed `DetoxHook`:** ≈ 10.4 KB (well under the 24 KB EIP-170 limit)
+- **Deployed `AvengeHook`:** ≈ 10.4 KB (well under the 24 KB EIP-170 limit)
 - **Exact-output swaps:** exit at the top of `_beforeSwap` with no oracle work
-- **Exact-input swaps:** two Pyth reads + slot0 read, then either a pass-through return or, on a detected arb, `take` + `donate` + `settle` (full flow exercised by `DetoxHookCapture.t.sol`)
+- **Exact-input swaps:** two Pyth reads + slot0 read, then either a pass-through return or, on a detected arb, `take` + `donate` + `settle` (full flow exercised by `AvengeHookCapture.t.sol`)
 - No proxy, no upgrade path — redeploy to change logic
 
 ---
@@ -647,7 +647,7 @@ store (measured payload age 0–2 s) — see
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Change `avenge-rs/` (Rust) or `detox-hook/packages/foundry/src/` (Solidity)
+3. Change `avenge-rs/` (Rust) or `avenge-hook/packages/foundry/src/` (Solidity)
 4. Add tests for new functionality
 5. Make sure `forge test` and `cargo test` both pass
 6. Commit and open a Pull Request

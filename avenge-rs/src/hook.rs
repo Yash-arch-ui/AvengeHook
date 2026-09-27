@@ -8,7 +8,7 @@ use eyre::Result;
 use std::sync::Arc;
 
 abigen!(
-    DetoxHook,
+    AvengeHook,
     r#"
     [
         {"inputs":[],"name":"rhoBps","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
@@ -39,11 +39,11 @@ abigen!(
 /// Type alias for the concrete provider we use everywhere.
 pub type Provider = ethers::providers::Provider<ethers::providers::Http>;
 
-/// Create a DetoxHook contract instance.
-pub fn hook_contract(address: Address, rpc_url: &str) -> Result<DetoxHook<Provider>> {
+/// Create a AvengeHook contract instance.
+pub fn hook_contract(address: Address, rpc_url: &str) -> Result<AvengeHook<Provider>> {
     let provider = Provider::try_from(rpc_url)?;
     let client = Arc::new(provider);
-    Ok(DetoxHook::new(address, client))
+    Ok(AvengeHook::new(address, client))
 }
 
 // ============ View Functions ============
@@ -187,7 +187,7 @@ pub async fn update_parameters(
         .with_chain_id(chain_id);
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
-    let contract = DetoxHook::new(address, client);
+    let contract = AvengeHook::new(address, client);
     let tx = contract
         .update_parameters(rho_bps, staleness_threshold)
         .send()
@@ -212,7 +212,7 @@ pub async fn set_price_id(
         .with_chain_id(chain_id);
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
-    let contract = DetoxHook::new(address, client);
+    let contract = AvengeHook::new(address, client);
     let tx = contract
         .set_price_id(currency, price_id.into())
         .send()
@@ -238,7 +238,7 @@ pub async fn withdraw_accumulated_eth(
         .with_chain_id(chain_id);
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
-    let contract = DetoxHook::new(address, client);
+    let contract = AvengeHook::new(address, client);
     let tx = contract
         .withdraw_accumulated_eth(pool_id.into(), amount, recipient)
         .send()
@@ -265,7 +265,7 @@ pub async fn withdraw_accumulated_erc20(
         .with_chain_id(chain_id);
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
-    let contract = DetoxHook::new(address, client);
+    let contract = AvengeHook::new(address, client);
     let tx = contract
         .withdraw_accumulated_erc20(pool_id.into(), currency, amount, recipient)
         .send()

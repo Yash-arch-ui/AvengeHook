@@ -48,13 +48,13 @@ fn donate_to_lps_topic() -> H256 {
 
 // ============ Monitor ============
 
-/// Monitor polls for ALL DetoxHook events every `interval` seconds.
+/// Monitor polls for ALL AvengeHook events every `interval` seconds.
 pub async fn run_monitor(hook_address: Address, rpc_url: &str, interval_secs: u64) -> Result<()> {
     let provider = Provider::try_from(rpc_url)?;
     let client = Arc::new(provider);
     let contract = hook_contract(hook_address, rpc_url)?;
 
-    println!("=== DetoxHook Monitor ===");
+    println!("=== AvengeHook Monitor ===");
     println!("Watching hook: {:?}", hook_address);
 
     let (rho, staleness, lp_donate) = contract.get_parameters().call().await?;
