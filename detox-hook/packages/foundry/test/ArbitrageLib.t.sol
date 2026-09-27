@@ -87,7 +87,7 @@ contract ArbitrageLibTest is Test {
 
     function test_isOutsideConfidenceBand_Inside() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: (USDC_PRICE * PRICE_PRECISION) / ETH_PRICE, // Exact market price
+            poolPrice: (ETH_PRICE * PRICE_PRECISION) / USDC_PRICE, // Exact market price (c1 per c0)
             inputPrice: ETH_PRICE,
             outputPrice: USDC_PRICE,
             inputPriceConf: ETH_CONF,
@@ -104,7 +104,7 @@ contract ArbitrageLibTest is Test {
 
     function test_calculateArbitrageOpportunity_ZeroForOne_OutsideUpperBound() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: 1000 * PRICE_PRECISION, // Very high pool price, outside upper bound
+            poolPrice: 4000 * PRICE_PRECISION, // Pool pays 2x market for currency1, outside upper bound
             inputPrice: ETH_PRICE,
             outputPrice: USDC_PRICE,
             inputPriceConf: ETH_CONF,
@@ -114,20 +114,21 @@ contract ArbitrageLibTest is Test {
         });
 
         uint256 arbitrageOpp = ArbitrageLib.calculateArbitrageOpportunity(params);
-        
-        // Should calculate against upper bound, not market price
+
+        // Pool units are c1 per c0, so the market bounds use (input, output) = (ETH, USDC)
         (,uint256 upperBound) = ArbitrageLib.calculateMarketPriceBounds(
-            USDC_PRICE, ETH_PRICE, USDC_CONF, ETH_CONF
+            ETH_PRICE, USDC_PRICE, ETH_CONF, USDC_CONF
         );
-        uint256 expected = (1 ether * (params.poolPrice - upperBound)) / PRICE_PRECISION;
-        
+        // Opportunity is measured against the upper bound and denominated in currency1
+        uint256 expected = (1 ether * (params.poolPrice - upperBound)) / upperBound;
+
         assertEq(arbitrageOpp, expected, "Arbitrage should be calculated against upper confidence bound");
         assertGt(arbitrageOpp, 0, "Should have arbitrage opportunity");
     }
 
     function test_calculateArbitrageOpportunity_ZeroForOne_InsideBounds() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: (USDC_PRICE * PRICE_PRECISION) / ETH_PRICE, // Exact market price
+            poolPrice: (ETH_PRICE * PRICE_PRECISION) / USDC_PRICE, // Exact market price (c1 per c0)
             inputPrice: ETH_PRICE,
             outputPrice: USDC_PRICE,
             inputPriceConf: ETH_CONF,
@@ -157,7 +158,8 @@ contract ArbitrageLibTest is Test {
         (uint256 lowerBound,) = ArbitrageLib.calculateMarketPriceBounds(
             ETH_PRICE, USDC_PRICE, ETH_CONF, USDC_CONF
         );
-        uint256 expected = (params.exactInputAmount * (lowerBound - params.poolPrice)) / PRICE_PRECISION;
+        // Denominated in currency0: gain = amountIn * (market - pool) / pool
+        uint256 expected = (params.exactInputAmount * (lowerBound - params.poolPrice)) / params.poolPrice;
         
         assertEq(arbitrageOpp, expected, "Arbitrage should be calculated against lower confidence bound");
         assertGt(arbitrageOpp, 0, "Should have arbitrage opportunity");
@@ -167,7 +169,7 @@ contract ArbitrageLibTest is Test {
 
     function test_shouldInterfere_OutsideBandAndAboveThreshold() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: 2000 * PRICE_PRECISION, // High pool price, outside confidence band
+            poolPrice: 4000 * PRICE_PRECISION, // Pool pays 2x market, outside confidence band
             inputPrice: ETH_PRICE,
             outputPrice: USDC_PRICE,
             inputPriceConf: ETH_CONF,
@@ -197,7 +199,7 @@ contract ArbitrageLibTest is Test {
 
     function test_shouldInterfere_InsideBandEvenIfAdvantageous() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: (USDC_PRICE * PRICE_PRECISION) / ETH_PRICE, // Market price, inside confidence band
+            poolPrice: (ETH_PRICE * PRICE_PRECISION) / USDC_PRICE, // Market price, inside confidence band
             inputPrice: ETH_PRICE,
             outputPrice: USDC_PRICE,
             inputPriceConf: ETH_CONF,
@@ -214,7 +216,7 @@ contract ArbitrageLibTest is Test {
 
     function test_analyzeArbitrageOpportunity_ShouldInterfere() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: 1000 * PRICE_PRECISION, // Very high, outside confidence band
+            poolPrice: 4000 * PRICE_PRECISION, // Pool pays 2x market, outside confidence band
             inputPrice: ETH_PRICE,
             outputPrice: USDC_PRICE,
             inputPriceConf: ETH_CONF,
@@ -237,7 +239,7 @@ contract ArbitrageLibTest is Test {
 
     function test_analyzeArbitrageOpportunity_ShouldNotInterfere_InsideBand() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: (USDC_PRICE * PRICE_PRECISION) / ETH_PRICE, // Market price, inside band
+            poolPrice: (ETH_PRICE * PRICE_PRECISION) / USDC_PRICE, // Market price, inside band
             inputPrice: ETH_PRICE,
             outputPrice: USDC_PRICE,
             inputPriceConf: ETH_CONF,
@@ -326,7 +328,7 @@ contract ArbitrageLibTest is Test {
 
     function test_fullArbitrageFlow_WithConfidence_ShouldInterfere() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: 2000 * PRICE_PRECISION, // High pool price, outside upper bound
+            poolPrice: 4000 * PRICE_PRECISION, // Pool pays 2x market, outside upper bound
             inputPrice: ETH_PRICE, // $2000
             outputPrice: USDC_PRICE, // $1
             inputPriceConf: ETH_CONF, // $10
@@ -361,7 +363,7 @@ contract ArbitrageLibTest is Test {
 
     function test_fullArbitrageFlow_WithConfidence_ShouldNotInterfere() public {
         ArbitrageLib.ArbitrageParams memory params = ArbitrageLib.ArbitrageParams({
-            poolPrice: (USDC_PRICE * PRICE_PRECISION) / ETH_PRICE, // Market price, inside band
+            poolPrice: (ETH_PRICE * PRICE_PRECISION) / USDC_PRICE, // Market price, inside band
             inputPrice: ETH_PRICE,
             outputPrice: USDC_PRICE,
             inputPriceConf: ETH_CONF,

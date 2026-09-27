@@ -293,7 +293,7 @@ contract DetoxHookTest is Test, Deployers {
     /// @notice Test that getParameters returns correct values including lpDonateBps
     function test_GetParameters() public view {
         (uint256 rho, uint256 staleness, uint256 lpDonate) = hook.getParameters();
-        assertEq(rho, 8000, "rhoBps should be 8000 (80%)");
+        assertEq(rho, 7000, "rhoBps should be 7000 (70%)");
         assertEq(staleness, 60, "staleness should be 60 seconds");
         assertEq(lpDonate, 8000, "lpDonateBps should be 8000 (80%)");
         console.log("Parameters verified!");

@@ -158,8 +158,9 @@ contract DetoxHookWave2Test is Test, Deployers {
     // ============ Wave 2 Tests: Arbitrage Detection & Calculation Logic ============
 
     function testArbitrageCalculationZeroForOne() public {
-        // Setup: Pool price = 1:1, Market ETH = $1.10 (pool gives better rate for selling ETH)
-        setETHPrice(110); // $1.10 - ETH is more expensive in market
+        // Setup: Pool prices currency0 at 1.0 currency1; market has ETH at $0.90, so the
+        // pool pays MORE currency1 per ETH than the market does -> advantageous for zeroForOne
+        setETHPrice(90); // $0.90 - pool over-pays relative to market
         setUSDCPrice(100); // $1.00
 
         SwapParams memory params = SwapParams({
@@ -177,7 +178,7 @@ contract DetoxHookWave2Test is Test, Deployers {
         uint256 poolPriceRaw = HookLibrary.sqrtPriceToPrice(sqrtPriceX96);
         uint256 poolPrice = FullMath.mulDiv(poolPriceRaw, 100000000, 1e18); // Convert to PRICE_PRECISION
         
-        uint256 marketPrice = (usdcPrice * 100000000) / ethPrice; // USDC/ETH market price
+        uint256 marketPrice = (ethPrice * 100000000) / usdcPrice; // market in currency1 per currency0
 
         console.log("=== Debug Info ===");
         console.log("ETH price:", ethPrice);
@@ -226,7 +227,7 @@ contract DetoxHookWave2Test is Test, Deployers {
 
     function testThresholdBehaviorJustBelow() public {
         // Test when arbitrage is not advantageous for swapper
-        setETHPrice(90); // $0.90 - not advantageous for zeroForOne (pool gives worse rate)
+        setETHPrice(110); // $1.10 - market pays more than the pool => not advantageous for zeroForOne
         setUSDCPrice(100); // $1.00
 
         SwapParams memory params = SwapParams({
@@ -248,7 +249,7 @@ contract DetoxHookWave2Test is Test, Deployers {
 
     function testThresholdBehaviorJustAbove() public {
         // Test when arbitrage is advantageous for swapper
-        setETHPrice(110); // $1.10 - advantageous for zeroForOne (pool gives better rate)
+        setETHPrice(90); // $0.90 - pool pays more than market => advantageous for zeroForOne
         setUSDCPrice(100); // $1.00
 
         SwapParams memory params = SwapParams({
@@ -344,7 +345,7 @@ contract DetoxHookWave2Test is Test, Deployers {
         assertEq(stalenessThreshold, 120, "Staleness threshold should be updated");
 
         // Test that new parameters affect arbitrage calculation
-        setETHPrice(110); // $1.10 - advantageous for zeroForOne
+        setETHPrice(90); // $0.90 - pool pays more than market => advantageous for zeroForOne
         setUSDCPrice(100); // $1.00
 
         SwapParams memory params = SwapParams({
@@ -366,7 +367,7 @@ contract DetoxHookWave2Test is Test, Deployers {
 
     function testArbitrageWithDifferentSwapSizes() public {
         // Test arbitrage calculation with different swap sizes
-        setETHPrice(110); // $1.10 - advantageous for zeroForOne (pool gives better rate)
+        setETHPrice(90); // $0.90 - pool pays more than market => advantageous for zeroForOne
         setUSDCPrice(100); // $1.00
 
         uint256[] memory swapAmounts = new uint256[](4);
@@ -401,8 +402,8 @@ contract DetoxHookWave2Test is Test, Deployers {
     function testBothSwapDirections() public {
         // Test arbitrage in both directions
         
-        // Direction 1: ETH expensive in market (advantageous for zeroForOne - selling ETH)
-        setETHPrice(110); // $1.10 - pool gives better rate for selling ETH
+        // Direction 1: ETH cheap in market (advantageous for zeroForOne - selling ETH)
+        setETHPrice(90); // $0.90 - pool pays more currency1 per ETH than market
         setUSDCPrice(100); // $1.00
 
         SwapParams memory paramsZeroForOne = SwapParams({
@@ -417,8 +418,8 @@ contract DetoxHookWave2Test is Test, Deployers {
         assertTrue(shouldInterfere1, "Should interfere when selling ETH is advantageous");
         assertGt(arbitrageOpp1, 0, "Should have arbitrage opportunity");
 
-        // Direction 2: ETH expensive in market (advantageous for oneForZero - buying ETH)
-        setETHPrice(110); // $1.10 - pool gives better rate for buying ETH (1 ETH for 100 USDC vs 110 USDC in market)
+        // Direction 2: ETH expensive in market (advantageous for oneForZero - selling currency1)
+        setETHPrice(110); // $1.10 - market wants 1.10 currency1 per ETH while the pool only asks 1.00
         setUSDCPrice(100); // $1.00
 
         SwapParams memory paramsOneForZero = SwapParams({

@@ -271,7 +271,7 @@ contract DetoxHookArbitrumSepoliaFork is Test {
         assertFalse(permissions.beforeRemoveLiquidity, "beforeRemoveLiquidity should be disabled");
         assertFalse(permissions.afterRemoveLiquidity, "afterRemoveLiquidity should be disabled");
         assertFalse(permissions.afterSwap, "afterSwap should be disabled");
-        assertFalse(permissions.beforeDonate, "beforeDonate should be disabled");
+        assertTrue(permissions.beforeDonate, "beforeDonate should be enabled (no-op so external donate() works)");
         assertFalse(permissions.afterDonate, "afterDonate should be disabled");
     }
     

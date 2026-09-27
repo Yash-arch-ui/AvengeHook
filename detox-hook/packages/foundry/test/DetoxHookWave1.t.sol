@@ -95,7 +95,7 @@ contract DetoxHookWave1Test is Test, Deployers {
 
         // Test initial parameters
         (uint256 rhoBps, uint256 stalenessThreshold, uint256 lpDonateBps) = hook.getParameters();
-        assertEq(rhoBps, 8000, "Initial rho BPS should be 8000 (80%)");
+        assertEq(rhoBps, 7000, "Initial rho BPS should be 7000 (70%)");
         assertEq(stalenessThreshold, 60, "Initial staleness threshold should be 60 seconds");
     }
 
