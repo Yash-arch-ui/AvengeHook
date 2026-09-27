@@ -100,7 +100,10 @@ pub async fn get_accumulated_tokens(
     currency: Address,
 ) -> Result<U256> {
     let contract = hook_contract(address, rpc_url)?;
-    Ok(contract.get_accumulated_tokens(pool_id.into(), currency).call().await?)
+    Ok(contract
+        .get_accumulated_tokens(pool_id.into(), currency)
+        .call()
+        .await?)
 }
 
 /// Get oracle price for a currency (price, valid, publishTime).
@@ -120,7 +123,10 @@ pub async fn get_oracle_price_with_confidence(
     currency: Address,
 ) -> Result<(U256, U256, bool, U256)> {
     let contract = hook_contract(address, rpc_url)?;
-    Ok(contract.get_oracle_price_with_confidence(currency).call().await?)
+    Ok(contract
+        .get_oracle_price_with_confidence(currency)
+        .call()
+        .await?)
 }
 
 /// Get the Pyth price ID for a currency.
@@ -134,10 +140,7 @@ pub async fn get_pyth_price_id(
 }
 
 /// Get hook permissions.
-pub async fn get_hook_permissions(
-    address: Address,
-    rpc_url: &str,
-) -> Result<Permissions> {
+pub async fn get_hook_permissions(address: Address, rpc_url: &str) -> Result<Permissions> {
     let contract = hook_contract(address, rpc_url)?;
     Ok(contract.get_hook_permissions().call().await?)
 }
@@ -185,7 +188,11 @@ pub async fn update_parameters(
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
     let contract = DetoxHook::new(address, client);
-    let tx = contract.update_parameters(rho_bps, staleness_threshold).send().await?.await?;
+    let tx = contract
+        .update_parameters(rho_bps, staleness_threshold)
+        .send()
+        .await?
+        .await?;
     Ok(tx.ok_or_else(|| eyre::eyre!("Transaction failed"))?)
 }
 
@@ -206,7 +213,11 @@ pub async fn set_price_id(
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
     let contract = DetoxHook::new(address, client);
-    let tx = contract.set_price_id(currency, price_id.into()).send().await?.await?;
+    let tx = contract
+        .set_price_id(currency, price_id.into())
+        .send()
+        .await?
+        .await?;
     Ok(tx.ok_or_else(|| eyre::eyre!("Transaction failed"))?)
 }
 

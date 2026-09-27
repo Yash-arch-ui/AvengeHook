@@ -49,11 +49,9 @@ impl Config {
             .parse()?;
 
         // Default pool: live ETH/USDC Pool 1 — dynamic fee 8388608, tickSpacing 30
-        let pool_id = parse_bytes32(
-            &env::var("POOL_ID").unwrap_or_else(|_| {
-                "0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b".into()
-            }),
-        )?;
+        let pool_id = parse_bytes32(&env::var("POOL_ID").unwrap_or_else(|_| {
+            "0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b".into()
+        }))?;
 
         let usdc_address: Address = env::var("USDC_ADDRESS")
             .unwrap_or_else(|_| "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d".into())

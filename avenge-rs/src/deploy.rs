@@ -3,7 +3,12 @@ use eyre::Result;
 use std::process::Command;
 
 /// Deploy DetoxHook by calling the Foundry script.
-pub fn deploy_hook(forge_dir: &str, rpc_url: &str, private_key: &str, chain_id: u64) -> Result<DeployResult> {
+pub fn deploy_hook(
+    forge_dir: &str,
+    rpc_url: &str,
+    private_key: &str,
+    chain_id: u64,
+) -> Result<DeployResult> {
     println!("=== Deploying DetoxHook via Forge ===");
     println!("Chain ID: {}", chain_id);
     println!("RPC: {}", rpc_url);

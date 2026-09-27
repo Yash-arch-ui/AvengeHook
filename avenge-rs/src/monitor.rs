@@ -11,55 +11,45 @@ use crate::hook::{hook_contract, Provider};
 // ============ Event Topic Hashes ============
 
 fn arbitrage_captured_topic() -> H256 {
-    H256::from_slice(&hex::decode(
-        "815f5204730edec69803e4e5f169e34a0d37eb4217f2d04b104edab0d2496989",
+    H256::from_slice(
+        &hex::decode("815f5204730edec69803e4e5f169e34a0d37eb4217f2d04b104edab0d2496989").unwrap(),
     )
-    .unwrap())
 }
 
 fn parameters_updated_topic() -> H256 {
-    H256::from_slice(&hex::decode(
-        "bca959adb5aa52aaea5a17838313a61bebf160bf6064e31593c79c8432c79fea",
+    H256::from_slice(
+        &hex::decode("bca959adb5aa52aaea5a17838313a61bebf160bf6064e31593c79c8432c79fea").unwrap(),
     )
-    .unwrap())
 }
 
 fn price_id_updated_topic() -> H256 {
-    H256::from_slice(&hex::decode(
-        "614ad967403eca3c4a400b170d2fb8397a2eeffdad616ec761d3e492545f09e2",
+    H256::from_slice(
+        &hex::decode("614ad967403eca3c4a400b170d2fb8397a2eeffdad616ec761d3e492545f09e2").unwrap(),
     )
-    .unwrap())
 }
 
 fn eth_withdrawn_topic() -> H256 {
-    H256::from_slice(&hex::decode(
-        "e85193b00649d7c1275a569a5b49ce0a70d8c33fe2d4dfcb358670aa392e564a",
+    H256::from_slice(
+        &hex::decode("e85193b00649d7c1275a569a5b49ce0a70d8c33fe2d4dfcb358670aa392e564a").unwrap(),
     )
-    .unwrap())
 }
 
 fn erc20_withdrawn_topic() -> H256 {
-    H256::from_slice(&hex::decode(
-        "7f7a3c8adc2282c3f39a78be1ad8844fb24545a77dd1e1179c41d11e8a6da302",
+    H256::from_slice(
+        &hex::decode("7f7a3c8adc2282c3f39a78be1ad8844fb24545a77dd1e1179c41d11e8a6da302").unwrap(),
     )
-    .unwrap())
 }
 
 fn donate_to_lps_topic() -> H256 {
-    H256::from_slice(&hex::decode(
-        "b9dc18a4dbc9133971c8e3772c1e337989a9f11405f5ed603caf2ba59cad459b",
+    H256::from_slice(
+        &hex::decode("b9dc18a4dbc9133971c8e3772c1e337989a9f11405f5ed603caf2ba59cad459b").unwrap(),
     )
-    .unwrap())
 }
 
 // ============ Monitor ============
 
 /// Monitor polls for ALL DetoxHook events every `interval` seconds.
-pub async fn run_monitor(
-    hook_address: Address,
-    rpc_url: &str,
-    interval_secs: u64,
-) -> Result<()> {
+pub async fn run_monitor(hook_address: Address, rpc_url: &str, interval_secs: u64) -> Result<()> {
     let provider = Provider::try_from(rpc_url)?;
     let client = Arc::new(provider);
     let contract = hook_contract(hook_address, rpc_url)?;
@@ -68,11 +58,7 @@ pub async fn run_monitor(
     println!("Watching hook: {:?}", hook_address);
 
     let (rho, staleness, lp_donate) = contract.get_parameters().call().await?;
-    println!(
-        "Current rhoBps: {} ({}%)",
-        rho,
-        rho.as_u64() as f64 / 100.0
-    );
+    println!("Current rhoBps: {} ({}%)", rho, rho.as_u64() as f64 / 100.0);
     println!("Current stalenessThreshold: {}s", staleness);
     println!(
         "Current lpDonateBps: {} ({}%)",

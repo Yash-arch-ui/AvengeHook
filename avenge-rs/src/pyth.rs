@@ -52,24 +52,24 @@ pub mod price_ids {
     use ethers::types::H256;
 
     pub fn eth_usd() -> H256 {
-        H256::from_slice(&hex::decode(
-            "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+        H256::from_slice(
+            &hex::decode("ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace")
+                .unwrap(),
         )
-        .unwrap())
     }
 
     pub fn usdc_usd() -> H256 {
-        H256::from_slice(&hex::decode(
-            "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",
+        H256::from_slice(
+            &hex::decode("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a")
+                .unwrap(),
         )
-        .unwrap())
     }
 
     pub fn btc_usd() -> H256 {
-        H256::from_slice(&hex::decode(
-            "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+        H256::from_slice(
+            &hex::decode("e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43")
+                .unwrap(),
         )
-        .unwrap())
     }
 }
 
@@ -100,8 +100,11 @@ impl PythClient {
 
     /// Get a price from Pyth and normalize it to 1e8 format.
     pub async fn get_price(&self, feed_id: ethers::types::H256) -> Result<PythPrice> {
-        let (price_raw, conf_raw, expo, publish_time) =
-            self.contract.get_price_unsafe(feed_id.into()).call().await?;
+        let (price_raw, conf_raw, expo, publish_time) = self
+            .contract
+            .get_price_unsafe(feed_id.into())
+            .call()
+            .await?;
 
         let price = normalize_value(price_raw as u128, expo);
         let confidence = normalize_value(conf_raw as u128, expo);
