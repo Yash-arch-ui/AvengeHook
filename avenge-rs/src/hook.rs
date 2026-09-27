@@ -1,5 +1,7 @@
 use ethers::{
     contract::abigen,
+    providers::Middleware,
+    signers::Signer,
     types::{Address, H256, U256},
 };
 use eyre::Result;
@@ -22,6 +24,7 @@ abigen!(
         {"inputs":[{"internalType":"bytes32","name":"poolId","type":"bytes32"},{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"address payable","name":"recipient","type":"address"}],"name":"withdrawAccumulatedETH","outputs":[],"stateMutability":"nonpayable","type":"function"},
         {"inputs":[{"internalType":"bytes32","name":"poolId","type":"bytes32"},{"internalType":"address","name":"currency","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"address","name":"recipient","type":"address"}],"name":"withdrawAccumulatedERC20","outputs":[],"stateMutability":"nonpayable","type":"function"},
         {"inputs":[{"internalType":"address","name":"currency","type":"address"}],"name":"pythPriceIds","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"view","type":"function"},
+        {"inputs":[{"components":[{"internalType":"Currency","name":"currency0","type":"address"},{"internalType":"Currency","name":"currency1","type":"address"},{"internalType":"uint24","name":"fee","type":"uint24"},{"internalType":"int24","name":"tickSpacing","type":"int24"},{"internalType":"contract IHooks","name":"hooks","type":"address"}],"internalType":"struct PoolKey","name":"key","type":"tuple"},{"components":[{"internalType":"bool","name":"zeroForOne","type":"bool"},{"internalType":"int256","name":"amountSpecified","type":"int256"},{"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"}],"internalType":"struct SwapParams","name":"params","type":"tuple"}],"name":"calculateArbitrageOpportunity","outputs":[{"internalType":"uint256","name":"arbitrageOpp","type":"uint256"},{"internalType":"uint256","name":"hookShare","type":"uint256"},{"internalType":"bool","name":"shouldInterfere","type":"bool"},{"internalType":"bool","name":"isOutsideConfidenceBand","type":"bool"}],"stateMutability":"view","type":"function"},
         {"inputs":[],"name":"getHookPermissions","outputs":[{"components":[{"internalType":"bool","name":"beforeInitialize","type":"bool"},{"internalType":"bool","name":"afterInitialize","type":"bool"},{"internalType":"bool","name":"beforeAddLiquidity","type":"bool"},{"internalType":"bool","name":"beforeRemoveLiquidity","type":"bool"},{"internalType":"bool","name":"afterAddLiquidity","type":"bool"},{"internalType":"bool","name":"afterRemoveLiquidity","type":"bool"},{"internalType":"bool","name":"beforeSwap","type":"bool"},{"internalType":"bool","name":"afterSwap","type":"bool"},{"internalType":"bool","name":"beforeDonate","type":"bool"},{"internalType":"bool","name":"afterDonate","type":"bool"},{"internalType":"bool","name":"beforeSwapReturnDelta","type":"bool"},{"internalType":"bool","name":"afterSwapReturnDelta","type":"bool"},{"internalType":"bool","name":"afterAddLiquidityReturnDelta","type":"bool"},{"internalType":"bool","name":"afterRemoveLiquidityReturnDelta","type":"bool"}],"internalType":"struct Hooks.Permissions","name":"","type":"tuple"}],"stateMutability":"pure","type":"function"},
         {"anonymous":false,"inputs":[{"indexed":true,"internalType":"bytes32","name":"poolId","type":"bytes32"},{"indexed":true,"internalType":"address","name":"currency","type":"address"},{"indexed":false,"internalType":"uint256","name":"hookShare","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"arbitrageOpportunity","type":"uint256"},{"indexed":false,"internalType":"bool","name":"zeroForOne","type":"bool"}],"name":"ArbitrageCaptured","type":"event"},
         {"anonymous":false,"inputs":[{"indexed":false,"internalType":"uint256","name":"oldRhoBps","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"newRhoBps","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"oldStaleness","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"newStaleness","type":"uint256"}],"name":"ParametersUpdated","type":"event"},
@@ -46,10 +49,35 @@ pub fn hook_contract(address: Address, rpc_url: &str) -> Result<DetoxHook<Provid
 // ============ View Functions ============
 
 /// Read on-chain parameters (rhoBps, stalenessThreshold, lpDonateBps).
+///
+/// Deployments built before `lpDonateBps` was added return only two words; those are padded
+/// with the contract's `LP_DONATE_BPS` constant (8000 = 80%) so the CLI still works against
+/// the live hook.
 pub async fn get_parameters(address: Address, rpc_url: &str) -> Result<(U256, U256, U256)> {
     let contract = hook_contract(address, rpc_url)?;
-    let (rho, staleness, lp_donate_bps) = contract.get_parameters().call().await?;
-    Ok((rho, staleness, lp_donate_bps))
+    if let Ok(v) = contract.get_parameters().call().await {
+        return Ok(v);
+    }
+
+    // Raw eth_call: the ABI-crafted method would decode against the current 3-word signature.
+    let provider = Provider::try_from(rpc_url)?;
+    let tx = ethers::types::TransactionRequest::new()
+        .to(address)
+        .data([0xa5, 0xea, 0x11, 0xda]); // getParameters()
+    let raw = provider.call(&tx.into(), None).await?;
+    let data = raw.as_ref();
+    eyre::ensure!(
+        data.len() >= 64,
+        "unexpected getParameters() return ({} bytes)",
+        data.len()
+    );
+    let word = |i: usize| U256::from_big_endian(&data[i * 32..i * 32 + 32]);
+    let lp_donate = if data.len() >= 96 {
+        word(2)
+    } else {
+        U256::from(8000u64)
+    };
+    Ok((word(0), word(1), lp_donate))
 }
 
 /// Get the hook owner address.
@@ -114,6 +142,30 @@ pub async fn get_hook_permissions(
     Ok(contract.get_hook_permissions().call().await?)
 }
 
+/// Read `calculateArbitrageOpportunity(poolKey, swapParams)` on-chain.
+///
+/// Returns `(arbitrageOpp, hookShare, shouldInterfere, isOutsideConfidenceBand)` where
+/// `arbitrageOpp` and `hookShare` are denominated in the swap's input currency.
+pub async fn calculate_arbitrage_opportunity(
+    address: Address,
+    rpc_url: &str,
+    key: PoolKey,
+    params: SwapParams,
+) -> Result<(U256, U256, bool, bool)> {
+    let contract = hook_contract(address, rpc_url)?;
+    contract
+        .calculate_arbitrage_opportunity(key, params)
+        .call()
+        .await
+        .map_err(|e| {
+            eyre::eyre!(
+                "{e} (calculateArbitrageOpportunity reverted or is missing on {:?}; \
+                 the deployed hook may predate the current source - redeploy)",
+                address
+            )
+        })
+}
+
 // ============ Owner Functions ============
 
 /// Update hook parameters (owner only).
@@ -125,8 +177,11 @@ pub async fn update_parameters(
     staleness_threshold: U256,
 ) -> Result<ethers::types::TransactionReceipt> {
     let provider = Provider::try_from(rpc_url)?;
+    let chain_id = provider.get_chainid().await?.as_u64();
     let client = Arc::new(provider);
-    let wallet = private_key.parse::<ethers::signers::LocalWallet>()?;
+    let wallet = private_key
+        .parse::<ethers::signers::LocalWallet>()?
+        .with_chain_id(chain_id);
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
     let contract = DetoxHook::new(address, client);
@@ -143,8 +198,11 @@ pub async fn set_price_id(
     price_id: H256,
 ) -> Result<ethers::types::TransactionReceipt> {
     let provider = Provider::try_from(rpc_url)?;
+    let chain_id = provider.get_chainid().await?.as_u64();
     let client = Arc::new(provider);
-    let wallet = private_key.parse::<ethers::signers::LocalWallet>()?;
+    let wallet = private_key
+        .parse::<ethers::signers::LocalWallet>()?
+        .with_chain_id(chain_id);
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
     let contract = DetoxHook::new(address, client);
@@ -162,8 +220,11 @@ pub async fn withdraw_accumulated_eth(
     recipient: Address,
 ) -> Result<ethers::types::TransactionReceipt> {
     let provider = Provider::try_from(rpc_url)?;
+    let chain_id = provider.get_chainid().await?.as_u64();
     let client = Arc::new(provider);
-    let wallet = private_key.parse::<ethers::signers::LocalWallet>()?;
+    let wallet = private_key
+        .parse::<ethers::signers::LocalWallet>()?
+        .with_chain_id(chain_id);
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
     let contract = DetoxHook::new(address, client);
@@ -186,8 +247,11 @@ pub async fn withdraw_accumulated_erc20(
     recipient: Address,
 ) -> Result<ethers::types::TransactionReceipt> {
     let provider = Provider::try_from(rpc_url)?;
+    let chain_id = provider.get_chainid().await?.as_u64();
     let client = Arc::new(provider);
-    let wallet = private_key.parse::<ethers::signers::LocalWallet>()?;
+    let wallet = private_key
+        .parse::<ethers::signers::LocalWallet>()?
+        .with_chain_id(chain_id);
     let client = ethers::middleware::SignerMiddleware::new(client, wallet);
     let client = Arc::new(client);
     let contract = DetoxHook::new(address, client);

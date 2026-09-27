@@ -3,8 +3,7 @@ mod deploy;
 mod hook;
 mod monitor;
 mod pyth;
-
-use ethers::types::{Address, H256, U256};
+use ethers::types::{Address, H256, I256, U256};
 use eyre::Result;
 
 #[tokio::main]
@@ -51,7 +50,8 @@ Commands:
   params           Show current hook parameters
   oracle           Get oracle prices with confidence from the hook contract
   permissions      Show hook permission flags
-  simulate         Simulate: read oracle + pool price, compute arb opportunity
+  simulate [amount] [zeroForOne]
+                 Quote calculateArbitrageOpportunity for a swap (default 1.0 token0)
   update-params    Update rhoBps and staleness (owner only)
   set-price-id     Set Pyth price ID for a currency (owner only)
   withdraw         Withdraw accumulated ETH or ERC20 (owner only)
@@ -66,6 +66,8 @@ Environment variables (set in .env):
   PYTH_ADDRESS     Pyth oracle address
   CHAIN_ID         Chain ID (default: 421614 = Arbitrum Sepolia)
   FORGE_DIR        Path to Foundry project (auto-detected if unset)
+  POOL_ID          Pool ID for state reads (default: ETH/USDC 0.30% / tickSpacing 60)
+  USDC_ADDRESS     USDC token used by state/oracle/simulate
   DEPLOYMENT_KEY   Private key for deployment (owner commands only)
 "#
     );
@@ -154,22 +156,28 @@ async fn cmd_state() -> Result<()> {
         lp_donate.as_u64() as f64 / 100.0
     );
 
-    // Check ETH and common tokens accumulated
-    let zero_pool = [0u8; 32];
+    // Per-pool accumulators (POOL_ID env, defaults to the ETH/USDC 0.05% pool)
+    let pool_id = cfg.pool_id;
     let eth_addr = Address::zero();
-    let acc_eth = hook::get_accumulated_tokens(cfg.hook_address, &cfg.rpc_url, zero_pool, eth_addr).await?;
-    println!("Accumulated ETH (zero pool): {} wei", acc_eth);
+    let acc_eth = hook::get_accumulated_tokens(cfg.hook_address, &cfg.rpc_url, pool_id, eth_addr).await?;
+    println!("Pool ID:         0x{}", hex::encode(pool_id));
+    println!("Accumulated ETH: {} wei", acc_eth);
 
-    // Check USDC on Arbitrum
-    let usdc = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d".parse::<Address>()?;
-    let acc_usdc = hook::get_accumulated_tokens(cfg.hook_address, &cfg.rpc_url, zero_pool, usdc).await?;
-    println!("Accumulated USDC (zero pool): {} wei", acc_usdc);
+    let acc_usdc = hook::get_accumulated_tokens(
+        cfg.hook_address,
+        &cfg.rpc_url,
+        pool_id,
+        cfg.usdc_address,
+    )
+    .await?;
+    println!("Accumulated USDC ({}): {} raw units", cfg.usdc_address, acc_usdc);
 
     // Check price IDs
     let eth_price_id = hook::get_pyth_price_id(cfg.hook_address, &cfg.rpc_url, eth_addr).await?;
     println!("ETH price ID: 0x{}", hex::encode(eth_price_id));
 
-    let usdc_price_id = hook::get_pyth_price_id(cfg.hook_address, &cfg.rpc_url, usdc).await?;
+    let usdc_price_id =
+        hook::get_pyth_price_id(cfg.hook_address, &cfg.rpc_url, cfg.usdc_address).await?;
     println!("USDC price ID: 0x{}", hex::encode(usdc_price_id));
 
     Ok(())
@@ -194,14 +202,11 @@ async fn cmd_params() -> Result<()> {
 async fn cmd_oracle() -> Result<()> {
     let cfg = config::Config::load()?;
 
-    if cfg.pyth_address == Address::zero() {
-        eyre::bail!("PYTH_ADDRESS not set in .env");
-    }
-
     println!("=== Hook Oracle Prices ===\n");
 
+    // Prices come from the hook's own Pyth views, so PYTH_ADDRESS is not needed here
     let eth_addr = Address::zero();
-    let usdc = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d".parse::<Address>()?;
+    let usdc = cfg.usdc_address;
 
     // ETH
     match hook::get_oracle_price_with_confidence(cfg.hook_address, &cfg.rpc_url, eth_addr).await {
@@ -257,6 +262,7 @@ async fn cmd_permissions() -> Result<()> {
 
 async fn cmd_simulate() -> Result<()> {
     let cfg = config::Config::load()?;
+    let args: Vec<String> = std::env::args().collect();
 
     println!("=== Simulate Swap on DetoxHook ===\n");
 
@@ -269,7 +275,7 @@ async fn cmd_simulate() -> Result<()> {
 
     // Read oracle prices
     let eth_addr = Address::zero();
-    let usdc = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d".parse::<Address>()?;
+    let usdc = cfg.usdc_address;
 
     println!("\n--- Oracle Prices ---");
     let (eth_price, eth_conf, eth_valid, _) =
@@ -312,8 +318,85 @@ async fn cmd_simulate() -> Result<()> {
         );
     }
 
-    println!("\nNote: Use 'prices' for direct Pyth calls, 'oracle' for hook-view prices.");
-    println!("To simulate a specific swap, monitor events after executing a swap on-chain.");
+    // --- On-chain simulation -------------------------------------------------
+    // Usage: detox-rs simulate [amountIn] [zeroForOne]
+    //   amountIn   : input amount in whole tokens (default 1.0)
+    //   zeroForOne : true = sell currency0, false = sell currency1
+    let amount_in: f64 = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(1.0);
+    let zero_for_one = args
+        .get(3)
+        .map(|a| matches!(a.as_str(), "true" | "1" | "yes"))
+        .unwrap_or(true);
+
+    let currency0 = env_address("CURRENCY0", Address::zero())?;
+    let currency1 = env_address("CURRENCY1", cfg.usdc_address)?;
+    // Defaults match the live ETH/USDC Pool 1 (POOL_ID=0x5771f78e...):
+    // dynamic fee 8388608, tickSpacing 30
+    let fee: u32 = std::env::var("POOL_FEE").unwrap_or_else(|_| "8388608".into()).parse()?;
+    let tick_spacing: i32 = std::env::var("TICK_SPACING").unwrap_or_else(|_| "30".into()).parse()?;
+    let decimals0: u32 = std::env::var("CURRENCY0_DECIMALS").unwrap_or_else(|_| "18".into()).parse()?;
+    let decimals1: u32 = std::env::var("CURRENCY1_DECIMALS").unwrap_or_else(|_| "6".into()).parse()?;
+
+    let (input_currency, input_decimals) = if zero_for_one {
+        (currency0, decimals0)
+    } else {
+        (currency1, decimals1)
+    };
+    let amount_raw = U256::from_dec_str(&format!(
+        "{:.0}",
+        amount_in * 10f64.powi(input_decimals as i32)
+    ))?;
+    let amount_specified =
+        -I256::try_from(amount_raw).map_err(|_| eyre::eyre!("amount is too large for int256"))?;
+
+    let sqrt_price_limit_x96 = if zero_for_one {
+        U256::from(4295128740u64) // TickMath.MIN_SQRT_PRICE + 1
+    } else {
+        U256::from_dec_str("1461446703485210103287273052203988822378723970341")? // MAX_SQRT_PRICE - 1
+    };
+
+    let key = hook::PoolKey {
+        currency_0: currency0,
+        currency_1: currency1,
+        fee,
+        tick_spacing,
+        hooks: cfg.hook_address,
+    };
+    let params = hook::SwapParams {
+        zero_for_one,
+        amount_specified,
+        sqrt_price_limit_x96,
+    };
+
+    let (arbitrage_opp, hook_share, should_interfere, outside_band) =
+        hook::calculate_arbitrage_opportunity(cfg.hook_address, &cfg.rpc_url, key, params).await?;
+
+    let input_symbol = if zero_for_one { "token0" } else { "token1" };
+    println!("\n--- calculateArbitrageOpportunity(poolKey, swapParams) ---");
+    println!(
+        "pool:                fee={} tickSpacing={} hooks={:?}",
+        fee, tick_spacing, cfg.hook_address
+    );
+    println!(
+        "swap:                zeroForOne={} amountSpecified={} ({} {})",
+        zero_for_one, amount_specified, amount_in, input_symbol
+    );
+    println!("input currency:      {:?}", input_currency);
+    println!("arbitrageOpp:        {} (input currency units)", arbitrage_opp);
+    println!(
+        "hookShare:           {} (rhoBps={} -> {:.2}% of opportunity)",
+        hook_share,
+        rho,
+        rho.as_u64() as f64 / 100.0
+    );
+    println!("shouldInterfere:     {}", should_interfere);
+    println!("outsideConfBand:     {}", outside_band);
+    println!(
+        "hint:                {} {} in {} raw units",
+        input_symbol,
+        amount_in,
+        amount_raw
+    );
 
     Ok(())
 }
@@ -468,4 +551,12 @@ fn cmd_test() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Read an optional address from the environment, falling back to `default`.
+fn env_address(var: &str, default: Address) -> Result<Address> {
+    match std::env::var(var) {
+        Ok(v) if !v.trim().is_empty() => Ok(v.trim().parse()?),
+        _ => Ok(default),
+    }
 }
