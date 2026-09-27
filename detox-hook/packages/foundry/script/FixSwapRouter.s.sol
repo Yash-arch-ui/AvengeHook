@@ -25,14 +25,14 @@ contract FixSwapRouter is Script {
         
         console.log("=== Current SwapRouter Hardcoded Values ===");
         console.log("Current zeroForOne limit:");
-        console.log(4295128739);
+        console.log(uint256(4295128739));
         
         console.log("=== Comparison ===");
         console.log("MIN_SQRT_PRICE + 1 vs hardcoded min:");
         console.log("Proper:");
         console.log(minSqrtPrice + 1);
         console.log("Current:");
-        console.log(4295128739);
+        console.log(uint256(4295128739));
         console.log("Match:");
         console.log((minSqrtPrice + 1) == 4295128739);
     }

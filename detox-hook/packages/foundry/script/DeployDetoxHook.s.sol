@@ -26,9 +26,19 @@ contract DeployDetoxHook is Script {
     event DeploymentValidated(address indexed hook, bool beforeSwap, bool beforeSwapReturnDelta);
     event SaltMined(bytes32 salt, address expectedAddress, uint160 flags);
 
+    // Resolved broadcaster address. Inside a script msg.sender is Foundry's
+    // DEFAULT_SENDER, not the broadcaster, so the hook owner must come from the key.
+    address internal deployer;
+
+    /// @notice Hook owner for the constructor (broadcaster behind DEPLOYMENT_KEY)
+    function hookOwner() public view returns (address) {
+        return deployer != address(0) ? deployer : msg.sender;
+    }
+
     /// @notice Main deployment function
     function run() external virtual {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYMENT_KEY");
+        deployer = vm.addr(deployerPrivateKey);
         vm.startBroadcast(deployerPrivateKey);
         
         address poolManager = getPoolManagerAddress();
@@ -53,7 +63,7 @@ contract DeployDetoxHook is Script {
         console.log("Chain ID:", block.chainid);
         console.log("Chain Name:", ChainAddresses.getChainName(block.chainid));
         console.log("Pool Manager:", poolManager);
-        console.log("Deployer:", msg.sender);
+        console.log("Deployer:", hookOwner());
 
         // Validate chain addresses before deployment
         if (block.chainid != ChainAddresses.LOCAL_ANVIL) {
@@ -87,7 +97,7 @@ contract DeployDetoxHook is Script {
         console.log("Chain Name:", ChainAddresses.getChainName(block.chainid));
         console.log("Pool Manager:", poolManager);
         console.log("Salt:", vm.toString(salt));
-        console.log("Deployer:", msg.sender);
+        console.log("Deployer:", hookOwner());
 
         // Validate chain addresses before deployment
         if (block.chainid != ChainAddresses.LOCAL_ANVIL) {
@@ -120,7 +130,7 @@ contract DeployDetoxHook is Script {
 
         // Prepare creation code with constructor arguments
         bytes memory creationCode = type(DetoxHook).creationCode;
-        bytes memory constructorArgs = abi.encode(IPoolManager(poolManager), msg.sender, address(0));
+        bytes memory constructorArgs = abi.encode(IPoolManager(poolManager), hookOwner(), address(0));
         bytes memory deploymentData = abi.encodePacked(creationCode, constructorArgs);
 
         // Manual mining with randomness
@@ -163,7 +173,7 @@ contract DeployDetoxHook is Script {
 
         // Calculate expected address
         bytes memory creationCode = type(DetoxHook).creationCode;
-        bytes memory constructorArgs = abi.encode(IPoolManager(poolManager), msg.sender, address(0));
+        bytes memory constructorArgs = abi.encode(IPoolManager(poolManager), hookOwner(), address(0));
         bytes memory creationCodeWithArgs = abi.encodePacked(creationCode, constructorArgs);
 
         address expectedAddress = HookMiner.computeAddress(CREATE2_DEPLOYER, uint256(salt), creationCodeWithArgs);
@@ -190,7 +200,7 @@ contract DeployDetoxHook is Script {
     function deployWithCreate2Proxy(address poolManager, bytes32 salt) public returns (DetoxHook hook) {
         // Prepare deployment data
         bytes memory creationCode = type(DetoxHook).creationCode;
-        bytes memory constructorArgs = abi.encode(IPoolManager(poolManager), msg.sender, address(0));
+        bytes memory constructorArgs = abi.encode(IPoolManager(poolManager), hookOwner(), address(0));
         bytes memory deploymentData = abi.encodePacked(creationCode, constructorArgs);
 
         // The CREATE2 Deployer Proxy expects: salt (32 bytes) + creation code
@@ -289,7 +299,7 @@ contract DeployDetoxHook is Script {
     /// @return The computed address
     function computeHookAddress(address poolManager, bytes32 salt) public view returns (address) {
         bytes memory creationCode = type(DetoxHook).creationCode;
-        bytes memory constructorArgs = abi.encode(IPoolManager(poolManager), msg.sender, address(0));
+        bytes memory constructorArgs = abi.encode(IPoolManager(poolManager), hookOwner(), address(0));
         bytes memory creationCodeWithArgs = abi.encodePacked(creationCode, constructorArgs);
         
         return HookMiner.computeAddress(CREATE2_DEPLOYER, uint256(salt), creationCodeWithArgs);

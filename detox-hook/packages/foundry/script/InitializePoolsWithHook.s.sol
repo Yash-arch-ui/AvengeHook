@@ -13,6 +13,8 @@ import { IHooks } from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import { IERC20Minimal } from "@uniswap/v4-core/src/interfaces/external/IERC20Minimal.sol";
 import { PoolModifyLiquidityTest } from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 import { ModifyLiquidityParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import { LPFeeLibrary } from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
+import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import { ChainAddresses } from "./ChainAddresses.sol";
 
 /// @title InitializePoolsWithHookScript
@@ -22,24 +24,37 @@ contract InitializePoolsWithHook is Script {
     using ChainAddresses for uint256;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
+    using StateLibrary for IPoolManager;
 
     // Deployment configuration (same as DeployDetoxHookComplete.s.sol)
-    uint256 constant LIQUIDITY_USDC_AMOUNT = 1e6; // 1 USDC (6 decimals)
-    uint24 constant POOL_FEE = 500; // 0.05% fee (low fee as requested)
-    
+    // LP fee is a liquidityDelta, NOT a token amount: L ~= 1.3e12 puts ~1.95 USDC
+    // + ~0.00038 ETH of in-range liquidity into each pool.
+    int256 constant LIQUIDITY_DELTA = 1.3e12;
+    // Native token attached per modifyLiquidity call; the test router settles the
+    // exact amount0 and refunds the remainder to the sender.
+    uint256 constant LIQUIDITY_ETH_VALUE = 0.01 ether;
+    // Dynamic-fee pool: the key's fee must be DYNAMIC_FEE_FLAG or PoolManager silently
+    // ignores the hook's beforeSwap fee override (LPFeeLibrary.isDynamicFee).
+    uint24 constant POOL_FEE = LPFeeLibrary.DYNAMIC_FEE_FLAG;
+    uint24 constant BASE_FEE = 500; // 0.05% base LP fee (pips, 1e6 = 100%)
+
     // Pool configurations - different tick spacings as requested
-    int24 constant TICK_SPACING_POOL_1 = 10; // Tick spacing for first pool
-    int24 constant TICK_SPACING_POOL_2 = 60; // Tick spacing for second pool
-    
-    // Price configurations (ETH/USDC)
-    // Pool 1: 1 ETH = 2500 USDC
-    // Pool 2: 1 ETH = 2600 USDC
-    uint160 constant SQRT_PRICE_2500 = 3961408125713216879677197516800; // sqrt(2500) * 2^96 from ChainAddresses
-    uint160 constant SQRT_PRICE_2600 = 4041451884327381504640132478976; // sqrt(2600) * 2^96 calculated
-    
+    // NOTE: spacing 10/60 was already initialized on-chain at a wrong price with an
+    // out-of-range position (state.liquidity == 0) and initialize is irreversible,
+    // so fresh keys use new spacings to create correct, in-range pools.
+    int24 constant TICK_SPACING_POOL_1 = 30; // Tick spacing for first pool (1200 % 30 == 0)
+    int24 constant TICK_SPACING_POOL_2 = 120; // Tick spacing for second pool (1200 % 120 == 0)
+
+    // Price configurations (ETH/USDC) in v4 raw units: currency0 = WETH (18 dec),
+    // currency1 = USDC (6 dec) => price = USDC_per_ETH * 1e6 / 1e18.
+    // 2500 USDC/ETH => 2.5e-9 => sqrtPriceX96 = sqrt(2.5e-9) * 2^96
+    uint160 constant SQRT_PRICE_2500 = 3961408125713216879677197;
+    // 2600 USDC/ETH => 2.6e-9 => sqrtPriceX96 = sqrt(2.6e-9) * 2^96
+    uint160 constant SQRT_PRICE_2600 = 4039859466863342510789667;
+
     // Minimum balance requirements
     uint256 constant MIN_ETH_BALANCE = 0.01 ether; // Minimum ETH for operations
-    uint256 constant MIN_USDC_BALANCE = 2e6; // Minimum 2 USDC for liquidity
+    uint256 constant MIN_USDC_BALANCE = 5e6; // Minimum 5 USDC for both pools' liquidity
     
     // Contract instances
     DetoxHook public hook;
@@ -52,6 +67,8 @@ contract InitializePoolsWithHook is Script {
     PoolKey public poolKey2; // ETH/USDC at 2600
     PoolId public poolId1;
     PoolId public poolId2;
+    int24 public tick1;
+    int24 public tick2;
     
     // Deployment state
     address public deployer;
@@ -62,7 +79,7 @@ contract InitializePoolsWithHook is Script {
     event PoolInitializationStarted(address indexed hookAddress, uint256 chainId, bool isForked);
     event BalanceChecked(address indexed account, uint256 ethBalance, uint256 usdcBalance, bool sufficient);
     event PoolInitialized(PoolId indexed poolId, uint160 sqrtPriceX96, int24 tickSpacing);
-    event LiquidityAdded(PoolId indexed poolId, uint256 usdcAmount, uint256 ethAmount);
+    event LiquidityAdded(PoolId indexed poolId, int256 liquidityDelta, uint256 ethAttached);
     event PoolInitializationCompleted(address indexed hook, PoolId poolId1, PoolId poolId2);
 
     /// @notice Main function to initialize pools with existing hook
@@ -258,7 +275,7 @@ contract InitializePoolsWithHook is Script {
         console.log("PoolKey Details:");
         console.log("  currency0:", Currency.unwrap(poolKey1.currency0));
         console.log("  currency1:", Currency.unwrap(poolKey1.currency1));
-        console.log("  fee:", poolKey1.fee, "bps (0.05%)");
+        console.log("  lpFee: dynamic, base 500 (0.05%); arb override 3000 (0.30%)");
         console.log("  tickSpacing:", poolKey1.tickSpacing);
         console.log("  hooks:", address(poolKey1.hooks));
         console.log("  Target Price: 2500 USDC/ETH");
@@ -269,35 +286,24 @@ contract InitializePoolsWithHook is Script {
         console.log("PoolKey Details:");
         console.log("  currency0:", Currency.unwrap(poolKey2.currency0));
         console.log("  currency1:", Currency.unwrap(poolKey2.currency1));
-        console.log("  fee:", poolKey2.fee, "bps (0.05%)");
+        console.log("  lpFee: dynamic, base 500 (0.05%); arb override 3000 (0.30%)");
         console.log("  tickSpacing:", poolKey2.tickSpacing);
         console.log("  hooks:", address(poolKey2.hooks));
         console.log("  Target Price: 2600 USDC/ETH");
         console.log("  sqrtPriceX96:", SQRT_PRICE_2600);
         console.log("  Pool ID:", vm.toString(PoolId.unwrap(poolId2)));
         
-        // Initialize pools
+        // Initialize pools. These tick spacings are unused on-chain, so initialize
+        // must succeed - fail loudly instead of silently continuing.
         console.log("Initializing Pool 1...");
-        try poolManager.initialize(poolKey1, SQRT_PRICE_2500) returns (int24 tick1) {
-            console.log("Pool 1 initialized successfully at tick:", tick1);
-        } catch Error(string memory reason) {
-            console.log("Pool 1 initialization failed:", reason);
-            console.log("Pool may already exist - continuing...");
-        } catch {
-            console.log("Pool 1 initialization failed with unknown error");
-            console.log("Pool may already exist - continuing...");
-        }
-        
+        tick1 = poolManager.initialize(poolKey1, SQRT_PRICE_2500);
+        console.log("Pool 1 initialized successfully at tick:", tick1);
+        _setBaseFee(poolKey1, "Pool 1");
+
         console.log("Initializing Pool 2...");
-        try poolManager.initialize(poolKey2, SQRT_PRICE_2600) returns (int24 tick2) {
-            console.log("Pool 2 initialized successfully at tick:", tick2);
-        } catch Error(string memory reason) {
-            console.log("Pool 2 initialization failed:", reason);
-            console.log("Pool may already exist - continuing...");
-        } catch {
-            console.log("Pool 2 initialization failed with unknown error");
-            console.log("Pool may already exist - continuing...");
-        }
+        tick2 = poolManager.initialize(poolKey2, SQRT_PRICE_2600);
+        console.log("Pool 2 initialized successfully at tick:", tick2);
+        _setBaseFee(poolKey2, "Pool 2");
         
         console.log("=== Pools Initialized Successfully ===");
         
@@ -305,74 +311,96 @@ contract InitializePoolsWithHook is Script {
         emit PoolInitialized(poolId2, SQRT_PRICE_2600, TICK_SPACING_POOL_2);
     }
     
+    /// @notice Dynamic-fee pools start with an LP fee of 0; set the hook's base fee right after init
+    function _setBaseFee(PoolKey memory key, string memory label) internal {
+        try hook.setDynamicLPFee(key, BASE_FEE) {
+            console.log("  Base LP fee set to 500 (0.05%) for", label);
+        } catch (bytes memory err) {
+            console.log("  [WARN] Base LP fee NOT set for", label, "- pools would charge 0% LP fee");
+            console.logBytes(err);
+        }
+    }
+    
     /// @notice Add liquidity to both pools
     function _addLiquidity() internal {
         console.log("=== Step 4: Add Liquidity ===");
-        
+
         // Approve USDC for liquidity operations
         usdc.approve(address(modifyLiquidityRouter), type(uint256).max);
-        
-        // Calculate ETH amounts for each pool based on prices
-        // Pool 1: 1 ETH = 2500 USDC, so 1 USDC = 1/2500 ETH = 0.0004 ETH
-        uint256 ethAmount1 = (LIQUIDITY_USDC_AMOUNT * 1e18) / (2500 * 1e6); // Convert to proper decimals
-        
-        // Pool 2: 1 ETH = 2600 USDC, so 1 USDC = 1/2600 ETH ≈ 0.000385 ETH
-        uint256 ethAmount2 = (LIQUIDITY_USDC_AMOUNT * 1e18) / (2600 * 1e6); // Convert to proper decimals
-        
-        console.log("Liquidity amounts:");
-        console.log("  Pool 1 - USDC:", LIQUIDITY_USDC_AMOUNT, "ETH:", ethAmount1);
-        console.log("  Pool 2 - USDC:", LIQUIDITY_USDC_AMOUNT, "ETH:", ethAmount2);
-        
+
+        // Positions are centered on the pool's actual tick so the mint is in
+        // range and PoolManager.state.liquidity is non-zero (an out-of-range
+        // mint leaves state.liquidity == 0 and the pool unusable).
+        int24 lower1 = _floorToSpacing(tick1 - 600, TICK_SPACING_POOL_1);
+        int24 upper1 = lower1 + 1200;
+        require(lower1 <= tick1 && tick1 < upper1, "pool1 position must contain tick1");
+        int24 lower2 = _floorToSpacing(tick2 - 600, TICK_SPACING_POOL_2);
+        int24 upper2 = lower2 + 1200;
+        require(lower2 <= tick2 && tick2 < upper2, "pool2 position must contain tick2");
+
+        console.log("Liquidity configuration:");
+        console.log("  liquidityDelta:", LIQUIDITY_DELTA);
+        console.log("  eth attached per pool (excess refunded):", LIQUIDITY_ETH_VALUE);
+        console.log("  Pool 1 range:", lower1);
+        console.log("  to:", upper1);
+        console.log("  Pool 1 current tick:", tick1);
+        console.log("  Pool 2 range:", lower2);
+        console.log("  to:", upper2);
+        console.log("  Pool 2 current tick:", tick2);
+
         // Add liquidity to Pool 1
         console.log("Adding liquidity to Pool 1...");
-        try modifyLiquidityRouter.modifyLiquidity{value: ethAmount1}(
+        BalanceDelta delta1 = modifyLiquidityRouter.modifyLiquidity{value: LIQUIDITY_ETH_VALUE}(
             poolKey1,
             ModifyLiquidityParams({
-                tickLower: -600,
-                tickUpper: 600,
-                liquidityDelta: int256(LIQUIDITY_USDC_AMOUNT), // Use USDC amount directly as liquidity
+                tickLower: lower1,
+                tickUpper: upper1,
+                liquidityDelta: LIQUIDITY_DELTA,
                 salt: bytes32(0)
             }),
             ""
-        ) returns (BalanceDelta delta1) {
-            console.log("Pool 1 liquidity added successfully");
-            console.log("  Balance delta amount0:", delta1.amount0());
-            console.log("  Balance delta amount1:", delta1.amount1());
-        } catch Error(string memory reason) {
-            console.log("Pool 1 liquidity addition failed:", reason);
-            console.log("Continuing with script...");
-        } catch {
-            console.log("Pool 1 liquidity addition failed with unknown error");
-            console.log("Continuing with script...");
-        }
-        
+        );
+        console.log("Pool 1 liquidity added successfully");
+        console.log("  Balance delta amount0:", delta1.amount0());
+        console.log("  Balance delta amount1:", delta1.amount1());
+
         // Add liquidity to Pool 2
         console.log("Adding liquidity to Pool 2...");
-        try modifyLiquidityRouter.modifyLiquidity{value: ethAmount2}(
+        BalanceDelta delta2 = modifyLiquidityRouter.modifyLiquidity{value: LIQUIDITY_ETH_VALUE}(
             poolKey2,
             ModifyLiquidityParams({
-                tickLower: -600,
-                tickUpper: 600,
-                liquidityDelta: int256(LIQUIDITY_USDC_AMOUNT), // Use USDC amount directly as liquidity
+                tickLower: lower2,
+                tickUpper: upper2,
+                liquidityDelta: LIQUIDITY_DELTA,
                 salt: bytes32(0)
             }),
             ""
-        ) returns (BalanceDelta delta2) {
-            console.log("Pool 2 liquidity added successfully");
-            console.log("  Balance delta amount0:", delta2.amount0());
-            console.log("  Balance delta amount1:", delta2.amount1());
-        } catch Error(string memory reason) {
-            console.log("Pool 2 liquidity addition failed:", reason);
-            console.log("Continuing with script...");
-        } catch {
-            console.log("Pool 2 liquidity addition failed with unknown error");
-            console.log("Continuing with script...");
+        );
+        console.log("Pool 2 liquidity added successfully");
+        console.log("  Balance delta amount0:", delta2.amount0());
+        console.log("  Balance delta amount1:", delta2.amount1());
+
+        // The whole point of the redesign: both pools must now report
+        // non-zero in-range liquidity from PoolManager state.
+        uint128 inRangeLiq1 = poolManager.getLiquidity(poolId1);
+        uint128 inRangeLiq2 = poolManager.getLiquidity(poolId2);
+        console.log("In-range liquidity (PoolManager state):");
+        console.log("  Pool 1:", inRangeLiq1);
+        console.log("  Pool 2:", inRangeLiq2);
+        require(inRangeLiq1 > 0, "Pool 1 has zero in-range liquidity");
+        require(inRangeLiq2 > 0, "Pool 2 has zero in-range liquidity");
+
+        emit LiquidityAdded(poolId1, LIQUIDITY_DELTA, LIQUIDITY_ETH_VALUE);
+        emit LiquidityAdded(poolId2, LIQUIDITY_DELTA, LIQUIDITY_ETH_VALUE);
+    }
+
+    /// @notice Floor a tick to a multiple of the spacing (toward negative infinity)
+    function _floorToSpacing(int24 tick, int24 spacing) internal pure returns (int24) {
+        int24 rem = tick % spacing;
+        if (rem < 0) {
+            rem += spacing;
         }
-        
-        console.log("Liquidity operations completed");
-        
-        emit LiquidityAdded(poolId1, LIQUIDITY_USDC_AMOUNT, ethAmount1);
-        emit LiquidityAdded(poolId2, LIQUIDITY_USDC_AMOUNT, ethAmount2);
+        return tick - rem;
     }
     
     /// @notice Log comprehensive summary
@@ -397,15 +425,15 @@ contract InitializePoolsWithHook is Script {
         console.log("Fee: 500 bps (0.05%)");
         console.log("Tick Spacing:", TICK_SPACING_POOL_1);
         console.log("Target Price: 2500 USDC/ETH");
-        console.log("Initial Liquidity: 1 USDC + 0.0004 ETH");
+        console.log("Initial Liquidity: ~1.95 USDC + ~0.00038 ETH (1.3e12)");
         console.log("");
-        
+
         console.log("=== Pool 2 Details (ETH/USDC @ 2600) ===");
         console.log("Pool ID:", vm.toString(PoolId.unwrap(poolId2)));
         console.log("Fee: 500 bps (0.05%)");
         console.log("Tick Spacing:", TICK_SPACING_POOL_2);
         console.log("Target Price: 2600 USDC/ETH");
-        console.log("Initial Liquidity: 1 USDC + ~0.000385 ETH");
+        console.log("Initial Liquidity: ~1.95 USDC + ~0.00038 ETH (1.3e12)");
         console.log("");
         
         console.log("Block Explorer Links:");

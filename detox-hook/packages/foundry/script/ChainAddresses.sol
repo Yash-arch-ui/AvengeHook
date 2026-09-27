@@ -264,18 +264,14 @@ library ChainAddresses {
      * @param usdcPerEth The USDC price per ETH (e.g., 2500 for $2500/ETH)
      * @return sqrtPriceX96 The calculated sqrtPriceX96 value
      */
+    /// @notice sqrtPriceX96 for an ETH/USDC pool quoted at `usdcPerEth` USDC per ETH.
+    /// currency0 = ETH (18 decimals), currency1 = USDC (6 decimals), so the raw pool
+    /// price is usdcPerEth * 1e-12 and sqrtPriceX96 = sqrt(raw) * 2^96.
+    /// At 2500 this returns 3961408125713216879677197 (the live Pool 1 price).
     function getEthUsdcSqrtPriceX96(uint256 usdcPerEth) internal pure returns (uint160) {
-        // Pre-calculated values for common prices
-        if (usdcPerEth == 2000) return 3543191098710758062418075085254;
-        if (usdcPerEth == 2500) return 3961408125713216879677197516800;
-        if (usdcPerEth == 3000) return 4339505120412727436079675601510;
-        if (usdcPerEth == 3500) return 4687201239189402080711122156406;
-
-        // For other prices, use approximation: sqrt(usdcPerEth) * 2^96 / 10^6
-        // This is a simplified calculation - for production, use the CalculatePoolPrice script
-        uint256 sqrtPrice = sqrt(usdcPerEth * 1e12);
+        uint256 sqrtPrice = sqrt(usdcPerEth * 1e12); // sqrt(usdcPerEth * 1e-12) * 1e12
         uint256 Q96 = 2 ** 96;
-        return uint160((sqrtPrice * Q96) / 1e6);
+        return uint160((sqrtPrice * Q96) / 1e12);
     }
 
     /**

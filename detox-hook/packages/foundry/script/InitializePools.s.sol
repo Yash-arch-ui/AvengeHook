@@ -15,6 +15,8 @@ import { IERC20Minimal } from "@uniswap/v4-core/src/interfaces/external/IERC20Mi
 import { PoolModifyLiquidityTest } from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 import { ModifyLiquidityParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import { ChainAddresses } from "./ChainAddresses.sol";
+import { DetoxHook } from "../src/DetoxHook.sol";
+import { LPFeeLibrary } from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 
 /// @title InitializePoolsScript
 /// @notice Script to initialize ETH/USDC pools and add initial liquidity
@@ -24,14 +26,18 @@ contract InitializePools is Script {
     using CurrencyLibrary for Currency;
 
     // Pool configuration
-    uint24 constant FEE_TIER_1 = 3000; // 0.3% fee
-    uint24 constant FEE_TIER_2 = 500;  // 0.05% fee
-    int24 constant TICK_SPACING_1 = 60; // For 0.3% fee
-    int24 constant TICK_SPACING_2 = 10; // For 0.05% fee
+    // Dynamic-fee pools: the key's fee must be DYNAMIC_FEE_FLAG or PoolManager ignores the
+    // hook's beforeSwap fee override (LPFeeLibrary.isDynamicFee). Base fees are set below.
+    uint24 constant FEE_TIER_1 = LPFeeLibrary.DYNAMIC_FEE_FLAG;
+    uint24 constant FEE_TIER_2 = LPFeeLibrary.DYNAMIC_FEE_FLAG;
+    uint24 constant BASE_FEE_1 = 500; // 0.05% base LP fee (pips, 1e6 = 100%) — matches live
+    uint24 constant BASE_FEE_2 = 500;  // 0.05% base LP fee (pips)
+    int24 constant TICK_SPACING_1 = 30; // Matches live Pool 1
+    int24 constant TICK_SPACING_2 = 120; // Matches live Pool 2
     
     // Price configuration (sqrt price X96 format)
-    uint160 constant SQRT_PRICE_2500 = 125270724187523965593206617637; // ~2500 USDC/ETH
-    uint160 constant SQRT_PRICE_2600 = 127775718394449857270889842187; // ~2600 USDC/ETH
+    uint160 constant SQRT_PRICE_2500 = 3961408125713216879677197; // sqrt(2500e-12) * 2^96 — 2500 USDC/ETH (18/6 decimals)
+    uint160 constant SQRT_PRICE_2600 = 4039859466863342510789667; // sqrt(2600e-12) * 2^96 — 2600 USDC/ETH
     
     // Liquidity amounts
     uint256 constant LIQUIDITY_USDC_AMOUNT = 1e6; // 1 USDC
@@ -42,6 +48,7 @@ contract InitializePools is Script {
     PoolModifyLiquidityTest public modifyLiquidityRouter;
     address public deployer;
     address public hookAddress;
+    DetoxHook public hook;
 
     // Events
     event PoolInitialized(PoolId indexed poolId, PoolKey poolKey, uint160 sqrtPriceX96);
@@ -79,8 +86,10 @@ contract InitializePools is Script {
         poolManager = IPoolManager(ChainAddresses.getPoolManager(block.chainid));
         usdc = IERC20Minimal(ChainAddresses.getUSDC(block.chainid));
         modifyLiquidityRouter = PoolModifyLiquidityTest(ChainAddresses.getPoolModifyLiquidityTest(block.chainid));
+        hook = DetoxHook(payable(hookAddress));
         
         console.log("Pool Manager:", address(poolManager));
+        console.log("Hook:", hookAddress);
         console.log("USDC Token:", address(usdc));
         console.log("Modify Liquidity Router:", address(modifyLiquidityRouter));
     }
@@ -110,8 +119,8 @@ contract InitializePools is Script {
         PoolKey memory poolKey2 = _createPoolKey(FEE_TIER_2, TICK_SPACING_2);
         
         // Initialize pools
-        _initializePool(poolKey1, SQRT_PRICE_2500, "Pool 1 (0.3% fee, ~2500 USDC/ETH)");
-        _initializePool(poolKey2, SQRT_PRICE_2600, "Pool 2 (0.05% fee, ~2600 USDC/ETH)");
+        _initializePool(poolKey1, SQRT_PRICE_2500, BASE_FEE_1, "Pool 1 (dynamic fee, base 0.05%, 2500 USDC/ETH, ts 30)");
+        _initializePool(poolKey2, SQRT_PRICE_2600, BASE_FEE_2, "Pool 2 (dynamic fee, base 0.05%, 2600 USDC/ETH, ts 120)");
     }
 
     /// @notice Create a pool key
@@ -126,7 +135,7 @@ contract InitializePools is Script {
     }
 
     /// @notice Initialize a single pool
-    function _initializePool(PoolKey memory poolKey, uint160 sqrtPriceX96, string memory description) internal {
+    function _initializePool(PoolKey memory poolKey, uint160 sqrtPriceX96, uint24 baseFee, string memory description) internal {
         console.log("Initializing", description);
         
         try poolManager.initialize(poolKey, sqrtPriceX96) returns (int24 tick) {
@@ -142,6 +151,17 @@ contract InitializePools is Script {
         } catch {
             console.log("Pool initialization failed with unknown error");
             console.log("Pool may already exist - continuing...");
+        }
+        _setBaseFee(poolKey, baseFee, description);
+    }
+    
+    /// @notice Dynamic-fee pools start with an LP fee of 0; apply the hook's base fee after init
+    function _setBaseFee(PoolKey memory poolKey, uint24 baseFee, string memory description) internal {
+        try hook.setDynamicLPFee(poolKey, baseFee) {
+            console.log("  Base LP fee set to", baseFee, "pips for", description);
+        } catch (bytes memory err) {
+            console.log("  [WARN] Base LP fee NOT set - pool would charge 0% LP fee:", description);
+            console.logBytes(err);
         }
     }
 

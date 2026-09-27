@@ -12,6 +12,7 @@ import { IHooks } from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import { Hooks } from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import { HookMiner } from "@v4-periphery/src/utils/HookMiner.sol";
 import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import { LPFeeLibrary } from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import { FullMath } from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import { IERC20Minimal } from "@uniswap/v4-core/src/interfaces/external/IERC20Minimal.sol";
 import { PoolModifyLiquidityTest } from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
@@ -37,17 +38,20 @@ contract DeployDetoxHookComplete is Script {
     // Deployment configuration
     uint256 constant HOOK_FUNDING_AMOUNT = 0.001 ether; // 0.001 ETH
     uint256 constant LIQUIDITY_USDC_AMOUNT = 1e6; // 1 USDC (6 decimals)
-    uint24 constant POOL_FEE = 500; // 0.05% fee (low fee as requested)
+    // Dynamic-fee pool: the key's fee must be DYNAMIC_FEE_FLAG or PoolManager silently
+    // ignores the hook's beforeSwap fee override (LPFeeLibrary.isDynamicFee).
+    uint24 constant POOL_FEE = LPFeeLibrary.DYNAMIC_FEE_FLAG;
+    uint24 constant BASE_FEE = 500; // 0.05% base LP fee (pips, 1e6 = 100%)
     
     // Pool configurations - different tick spacings as requested
-    int24 constant TICK_SPACING_POOL_1 = 10; // Tick spacing for first pool
-    int24 constant TICK_SPACING_POOL_2 = 60; // Tick spacing for second pool
+    int24 constant TICK_SPACING_POOL_1 = 30; // Matches live Pool 1
+    int24 constant TICK_SPACING_POOL_2 = 120; // Matches live Pool 2
     
     // Price configurations (ETH/USDC)
     // Pool 1: 1 ETH = 2500 USDC
     // Pool 2: 1 ETH = 2600 USDC
-    uint160 constant SQRT_PRICE_2500 = 3961408125713216879677197516800; // sqrt(2500) * 2^96 from ChainAddresses
-    uint160 constant SQRT_PRICE_2600 = 4041451884327381504640132478976; // sqrt(2600) * 2^96 calculated
+    uint160 constant SQRT_PRICE_2500 = 3961408125713216879677197; // sqrt(2500e-12) * 2^96 — 2500 USDC/ETH (18/6 decimals)
+    uint160 constant SQRT_PRICE_2600 = 4039859466863342510789667; // sqrt(2600e-12) * 2^96 — 2600 USDC/ETH
     
     // Minimum balance requirements
     uint256 constant MIN_ETH_BALANCE = 0.05 ether; // Minimum ETH for deployment and operations
@@ -561,7 +565,7 @@ contract DeployDetoxHookComplete is Script {
         console.log("PoolKey Details:");
         console.log("  currency0:", Currency.unwrap(poolKey1.currency0));
         console.log("  currency1:", Currency.unwrap(poolKey1.currency1));
-        console.log("  fee:", poolKey1.fee, "bps (0.05%)");
+        console.log("  lpFee: dynamic, base 500 (0.05%); arb override 3000 (0.30%)");
         console.log("  tickSpacing:", poolKey1.tickSpacing);
         console.log("  hooks:", address(poolKey1.hooks));
         console.log("  Target Price: 2500 USDC/ETH");
@@ -572,7 +576,7 @@ contract DeployDetoxHookComplete is Script {
         console.log("PoolKey Details:");
         console.log("  currency0:", Currency.unwrap(poolKey2.currency0));
         console.log("  currency1:", Currency.unwrap(poolKey2.currency1));
-        console.log("  fee:", poolKey2.fee, "bps (0.05%)");
+        console.log("  lpFee: dynamic, base 500 (0.05%); arb override 3000 (0.30%)");
         console.log("  tickSpacing:", poolKey2.tickSpacing);
         console.log("  hooks:", address(poolKey2.hooks));
         console.log("  Target Price: 2600 USDC/ETH");
@@ -590,6 +594,7 @@ contract DeployDetoxHookComplete is Script {
             console.log("Pool 1 initialization failed with unknown error");
             console.log("Pool may already exist - continuing...");
         }
+        _setBaseFee(poolKey1, "Pool 1");
         
         console.log("Initializing Pool 2...");
         try poolManager.initialize(poolKey2, SQRT_PRICE_2600) returns (int24 tick2) {
@@ -601,11 +606,22 @@ contract DeployDetoxHookComplete is Script {
             console.log("Pool 2 initialization failed with unknown error");
             console.log("Pool may already exist - continuing...");
         }
+        _setBaseFee(poolKey2, "Pool 2");
         
         console.log("=== Pools Initialized Successfully ===");
         
         emit PoolInitialized(poolId1, SQRT_PRICE_2500, TICK_SPACING_POOL_1);
         emit PoolInitialized(poolId2, SQRT_PRICE_2600, TICK_SPACING_POOL_2);
+    }
+    
+    /// @notice Dynamic-fee pools start with an LP fee of 0; set the hook's base fee right after init
+    function _setBaseFee(PoolKey memory key, string memory label) internal {
+        try hook.setDynamicLPFee(key, BASE_FEE) {
+            console.log("  Base LP fee set to 500 (0.05%) for", label);
+        } catch (bytes memory err) {
+            console.log("  [WARN] Base LP fee NOT set for", label, "- pools would charge 0% LP fee");
+            console.logBytes(err);
+        }
     }
     
     /// @notice Add liquidity to both pools
@@ -735,7 +751,7 @@ contract DeployDetoxHookComplete is Script {
         console.log("PoolKey:");
         console.log("  currency0:", Currency.unwrap(poolKey1.currency0), "(ETH)");
         console.log("  currency1:", Currency.unwrap(poolKey1.currency1), "(USDC)");
-        console.log("  fee:", poolKey1.fee, "bps (0.05%)");
+        console.log("  lpFee: dynamic, base 500 (0.05%); arb override 3000 (0.30%)");
         console.log("  tickSpacing:", poolKey1.tickSpacing);
         console.log("  hooks:", address(poolKey1.hooks));
         console.log("  sqrtPriceX96:", SQRT_PRICE_2500);
@@ -746,7 +762,7 @@ contract DeployDetoxHookComplete is Script {
         console.log("PoolKey:");
         console.log("  currency0:", Currency.unwrap(poolKey2.currency0), "(ETH)");
         console.log("  currency1:", Currency.unwrap(poolKey2.currency1), "(USDC)");
-        console.log("  fee:", poolKey2.fee, "bps (0.05%)");
+        console.log("  lpFee: dynamic, base 500 (0.05%); arb override 3000 (0.30%)");
         console.log("  tickSpacing:", poolKey2.tickSpacing);
         console.log("  hooks:", address(poolKey2.hooks));
         console.log("  sqrtPriceX96:", SQRT_PRICE_2600);
