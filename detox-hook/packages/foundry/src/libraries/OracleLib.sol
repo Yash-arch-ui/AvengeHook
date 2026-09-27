@@ -38,7 +38,7 @@ library OracleLib {
 
         price = normalizePythPrice(pythPrice);
         confidence = normalizePythConfidence(pythPrice);
-        
+
         return (price, confidence, true);
     }
 
@@ -166,6 +166,7 @@ library OracleLib {
                 publishTime: 0
             }), false);
         }
+        
     }
 
     // ============ Helper Functions ============

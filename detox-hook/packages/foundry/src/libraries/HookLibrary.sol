@@ -6,6 +6,7 @@ import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 import { PoolId, PoolIdLibrary } from "@uniswap/v4-core/src/types/PoolId.sol";
 import { Currency, CurrencyLibrary } from "@uniswap/v4-core/src/types/Currency.sol";
 import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import { FullMath } from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import { SqrtPriceMath } from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";
 import { SwapParams } from "@uniswap/v4-core/src/types/PoolOperation.sol";
@@ -68,15 +69,58 @@ library HookLibrary {
 
     // ============ Price Calculations ============
 
+    /// @notice Read the decimals of a currency (18 for the native currency)
+    /// @param currency The currency to inspect
+    /// @return decimals Token decimals (defaults to 18 on failure or for native ETH)
+    function tokenDecimals(Currency currency) internal view returns (uint8) {
+        address token = Currency.unwrap(currency);
+        if (token == address(0)) return 18;
+
+        (bool success, bytes memory data) = token.staticcall(abi.encodeWithSignature("decimals()"));
+        if (success && data.length >= 32) {
+            uint256 value = abi.decode(data, (uint256));
+            if (value <= 78) return uint8(value);
+        }
+        return 18;
+    }
+
     /// @notice Convert sqrt price to human-readable price ratio
     /// @param sqrtPriceX96 The sqrt price in Q64.96 format
-    /// @return price The price as currency1/currency0 with 18 decimals
+    /// @return price The price as currency1/currency0 with 18 decimals (raw token units)
     function sqrtPriceToPrice(uint160 sqrtPriceX96) internal pure returns (uint256 price) {
-        // Price = (sqrtPriceX96 / 2^96)^2
-        // Multiply by 10^18 for 18 decimal precision
-        uint256 priceX192 = uint256(sqrtPriceX96) * sqrtPriceX96;
-        price = (priceX192 * 1e18) >> 192; // Divide by 2^192 and multiply by 10^18
+        // price = (sqrtPriceX96 / 2^96)^2 * 1e18, computed with 512-bit intermediates so
+        // extreme (but valid) sqrt prices cannot overflow before the division
+        price = FullMath.mulDiv(uint256(sqrtPriceX96) * 1e18, uint256(sqrtPriceX96), 1 << 192);
     }
+
+    /// @notice Convert a raw pool price into whole-token units with PRICE_PRECISION (1e8)
+    /// @dev price18 is the raw token ratio scaled by 1e18. The whole-token ratio is
+    ///      price18 * 10^(decimals0 - decimals1) / 1e18, expressed here with 1e8 precision:
+    ///      price18 * 10^(decimals0 - decimals1) / 1e10
+    /// @param sqrtPriceX96 The sqrt price in Q64.96 format
+    /// @param decimals0 Decimals of currency0
+    /// @param decimals1 Decimals of currency1
+    /// @return price Whole-token currency1/currency0 price with 1e8 precision (0 if unrepresentable)
+    function sqrtPriceToNormalizedPrice(uint160 sqrtPriceX96, uint8 decimals0, uint8 decimals1)
+        internal
+        pure
+        returns (uint256 price)
+    {
+        uint256 price18 = sqrtPriceToPrice(sqrtPriceX96);
+        if (price18 == 0) return 0;
+
+        int256 exponent = int256(uint256(decimals0)) - int256(uint256(decimals1)) - 10;
+        if (exponent > 70 || exponent < -70) return 0;
+
+        if (exponent >= 0) {
+            uint256 scale = 10 ** uint256(exponent);
+            if (price18 > type(uint256).max / scale) return 0;
+            price = price18 * scale;
+        } else {
+            price = price18 / (10 ** uint256(-exponent));
+        }
+    }
+
 
     /// @notice Convert human-readable price to sqrt price
     /// @param price The price as currency1/currency0 with 18 decimals
