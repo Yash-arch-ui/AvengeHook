@@ -1,284 +1,314 @@
 # AvengeHook — MEV Protection for Uniswap V4
 
-> **The first on-chain MEV protection hook that fights back. When arbitrageurs exploit mispriced pools, AvengeHook captures their profits and redistributes them to liquidity providers — turning MEV extraction into LP revenue.**
+> **An on-chain MEV protection hook that fights back. When a swap executes far away from the oracle price, AvengeHook captures part of the arbitrage and donates it to liquidity providers — turning MEV extraction into LP revenue.**
 
 [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-FFDB1C.svg)](https://getfoundry.sh/)
 [![Uniswap V4](https://img.shields.io/badge/Uniswap-V4-FF007A.svg)](https://uniswap.org/)
 [![Pyth Network](https://img.shields.io/badge/Oracle-Pyth%20Network-6C5CE7.svg)](https://pyth.network/)
 [![Rust](https://img.shields.io/badge/Tooling-Rust-CE422B.svg)](https://www.rust-lang.org/)
 [![Arbitrum](https://img.shields.io/badge/Deployed-Arbitrum%20Sepolia-28A0F0.svg)](https://arbitrum.io/)
+[![Tests](https://img.shields.io/badge/Solidity%20tests-136%20%2F%20136-42ba76.svg)](./detox-hook/packages/foundry)
+
+> **Naming in this repo:** the product is **AvengeHook**, the hook contract is [`DetoxHook.sol`](./detox-hook/packages/foundry/src/DetoxHook.sol), and the Rust CLI is **`detox-rs`** in [`avenge-rs/`](./avenge-rs).
 
 ---
 
 ## The Problem
 
-MEV bots extract **$1B+ annually** from Uniswap pools. When pools become mispriced relative to global markets, sophisticated arbitrageurs:
+MEV bots extract **$1B+ annually** from Uniswap pools. When a pool becomes mispriced relative to global markets, arbitrageurs:
 
 - **Drain LP reserves** through atomic arbitrage cycles
 - **Leave LPs with impermanent loss** worse than simply holding
 - **Extract value** that should belong to liquidity providers
 - **Create unfair pricing** that hurts regular traders
 
-Traditional MEV protection relies on off-chain infrastructure (keepers, private mempools). AvengeHook does it **entirely on-chain** using Pyth's real-time oracle prices.
+Traditional MEV protection is off-chain (keepers, private mempools). AvengeHook does it **on-chain**, inside `beforeSwap`, using Pyth's real-time prices with confidence intervals.
 
 ---
 
 ## Our Solution
 
-AvengeHook sits inside every swap as a Uniswap V4 `beforeSwap` hook. It monitors execution prices against live Pyth Network oracle data and intervenes only when it detects arbitrage extraction:
-
 ```
-Swap arrives
+Swap arrives (exact input)
     │
     ▼
-┌─────────────────────────┐
-│  Fetch Pyth Prices      │  ETH/USD, USDC/USD — sub-second latency
-│  (pull oracle model)    │  with confidence intervals
-└────────┬────────────────┘
-         │
+┌───────────────────────────────┐
+│ 1. Read Pyth prices           │  input + output currency, with confidence
+│    staleness guard            │  stale/invalid → pass through untouched
+└────────┬──────────────────────┘
          ▼
-┌─────────────────────────┐
-│  Compare: Swap Price    │  execution price vs market rate
-│  vs Oracle Price        │  using confidence bands
-└────────┬────────────────┘
-         │
-    ┌────┴────┐
-    │         │
-  Normal    Arbitrage
-  Swap      Detected
-    │         │
-    ▼         ▼
- Pass    ┌─────────────────────┐
- Through │  Capture 80%        │  poolManager.take()
-         │  Donate to LPs      │  poolManager.donate()
-         │  Charge 5% fee      │  OVERRIDE_FEE_FLAG
-         │  Keep 20% in hook   │  accumulates for owner
-         └─────────────────────┘
+┌───────────────────────────────┐
+│ 2. Compare live pool price    │  pool price = currency1 per currency0 (slot0)
+│    with market price          │  market price = p(currency0) / p(currency1)
+└────────┬──────────────────────┘
+         ▼
+   outside Pyth confidence band
+   AND deviation ≥ 2% ?
+    │                │
+   NO               YES
+    │                │
+    ▼                ▼
+ Pass through   ┌──────────────────────────────────────────┐
+ unchanged      │ 3. opportunity = amountIn × deviation    │
+                │    hookShare  = opportunity × 70%        │
+                │                                       │
+                │ 4. take(hookShare) from the pool        │
+                │    donate(80% of hookShare) → LPs       │  feeGrowthGlobal
+                │    keep 20% of hookShare in the hook    │  withdrawable by owner
+                │                                       │
+                │ 5. beforeSwap fee override = 0.30%      │  only on dynamic-fee pools
+                │    (base fee stays 0.05%)               │
+                │                                       │
+                │ Safety rails: capture ≤ 50% of the      │  MAX_CAPTURE_BPS
+                │ swap input; never interferes with       │
+                │ exact-output swaps or empty pools       │
+                └──────────────────────────────────────────┘
 ```
 
 ### Key Design Decisions
 
 | Decision | Why |
 |----------|-----|
-| **Confidence bands** | Prevents false positives — only triggers when arb is outside Pyth's confidence interval |
-| **80/20 split** | Arbitrageurs still get 30% of opportunity (maintains market efficiency), LPs get 80% of hook's share |
-| **Dynamic fee override** | Uses Uniswap V4's `OVERRIDE_FEE_FLAG` to charge 5% on arb swaps only |
-| **`poolManager.donate()`** | Updates `feeGrowthGlobal` — distributes proportionally to in-range LPs |
-| **Pyth pull oracle** | Fresh prices fetched within the same transaction — no stale push data |
-| **Nonce-based reentrancy** | Avoids Aave flashloan callback deadlock (no `nonReentrant`) |
+| **Confidence bands** | The pool must sit *outside* Pyth's confidence interval — oracle noise never triggers a capture |
+| **2% deviation threshold** | `ARBITRAGE_THRESHOLD = 200 bps`; ordinary slippage passes through untouched |
+| **70/30 split (`rhoBps = 7000`)** | The hook takes 70% of the opportunity, the arbitrageur keeps 30%, so price correction still pays for itself (see [Game Theory](#game-theory)) |
+| **80/20 of the captured share** | `LP_SHARE = 80`: 80% of what the hook captures goes to LPs via `donate()`, 20% accrues to the hook/owner |
+| **Capture cap** | `MAX_CAPTURE_BPS = 5000` — never take more than 50% of the swap's input |
+| **Dynamic fee override** | `OVERRIDE_FEE_FLAG` charges 0.30% on an arb swap instead of the 0.05% base fee — *dynamic-fee pools only* (see [Fee override scope](#fee-override-scope)) |
+| **`poolManager.donate()`** | Updates `feeGrowthGlobal`, so captured value is distributed proportionally to in-range LPs |
+| **No-op `_beforeDonate`** | The address is mined with `BEFORE_DONATE_FLAG`; `BaseHook`'s default implementation would revert and break third-party `donate()` calls |
+| **Pyth pull oracle** | Prices are read inside the same transaction — no push data, no stale keeper |
+| **Fail-open** | Any oracle failure, missing liquidity, or over-sized capture degrades to "do nothing" rather than reverting the swap |
 
 ---
 
 ## Project Structure
 
 ```
-AvengeHook/
-├── README.md                          # This file
+ARBITRAGEBOT/
+├── README.md                              # This file
 ├── .gitignore
 │
-├── avenge-rs/                         # Rust CLI tooling
-│   ├── Cargo.toml                     # Dependencies: ethers, tokio, eyre
-│   ├── .env.example                   # Configuration template
+├── avenge-rs/                             # Rust CLI (crate: detox-rs)
+│   ├── Cargo.toml                         # ethers 2.0, tokio, eyre, serde
+│   ├── .env.example                       # Configuration template
 │   └── src/
-│       ├── main.rs                    # CLI entry point (14 commands)
-│       ├── config.rs                  # Env config + FORGE_DIR auto-detect
-│       ├── hook.rs                    # ABI bindings + all contract functions
-│       ├── monitor.rs                 # Real-time event monitoring (6 events)
-│       ├── deploy.rs                  # Forge deployment orchestration
-│       └── pyth.rs                    # Off-chain Pyth price fetching
+│       ├── main.rs                        # CLI entry point (14 commands)
+│       ├── config.rs                      # env config + FORGE_DIR / POOL_ID / USDC
+│       ├── hook.rs                        # abigen!() bindings incl. calculateArbitrageOpportunity
+│       ├── monitor.rs                     # real-time event monitoring (6 events)
+│       ├── deploy.rs                      # shells out to forge script
+│       └── pyth.rs                        # direct Pyth price reads + normalization tests
 │
-└── detox-hook/                        # Reference implementation (excluded from git)
-    └── packages/foundry/
-        ├── foundry.toml               # Solc 0.8.26, cancun EVM, optimizer
-        ├── remappings.txt             # Import path aliases
+└── detox-hook/
+    └── packages/foundry/                  # Foundry project
+        ├── foundry.toml                   # solc 0.8.26, cancun, via_ir, 50 runs
+        ├── remappings.txt                 # import path aliases
         ├── src/
-        │   ├── AvengeHook.sol         # Main hook (506 lines)
-        │   ├── libraries/
-        │   │   ├── ArbitrageLib.sol   # Confidence-band arb detection
-        │   │   ├── OracleLib.sol      # Pyth price normalization
-        │   │   ├── HookLibrary.sol    # Pool state reading, price math
-        │   │   └── PythLibrary.sol    # Minimal Pyth interfaces + MockPyth
-        │   └── interfaces/            # IPyth, IPoolManager, etc.
-        ├── test/
-        │   ├── AvengeHook.t.sol       # Core tests (10/10 passing)
-        │   ├── AvengeHookWave1.t.sol  # Wave 1 integration tests
-        │   ├── AvengeHookWave2.t.sol  # Wave 2 advanced scenarios
-        │   └── ...                    # Fork tests, local tests, etc.
+        │   ├── DetoxHook.sol              # main hook (594 lines)
+        │   ├── PoolRegistry.sol           # pool registry helper
+        │   ├── SwapRouter.sol             # test swap router
+        │   ├── SwapRouterFixed.sol
+        │   └── libraries/
+        │       ├── ArbitrageLib.sol       # price convention + arb math (265 lines)
+        │       ├── OracleLib.sol          # Pyth read, staleness, normalization
+        │       ├── HookLibrary.sol        # slot0 / liquidity / price helpers
+        │       └── PythLibrary.sol        # Pyth interfaces + MockPyth
+        ├── test/                          # 13 suites, 136 tests
+        │   ├── DetoxHookCapture.t.sol     # end-to-end capture flow
+        │   ├── ArbitrageLib.t.sol         # pure math unit tests
+        │   ├── OracleLib.t.sol            # oracle normalization tests
+        │   ├── DetoxHook.t.sol / Wave1 / Wave2
+        │   ├── DetoxHookArbitrumSepoliaFork.t.sol   # live fork tests
+        │   └── ...
         └── script/
-            ├── DeployDetoxHook.s.sol  # CREATE2 deployment
-            ├── FundDetoxHook.s.sol    # Hook funding
-            └── InitializePools.s.sol  # Pool initialization
+            ├── DeployDetoxHook.s.sol              # CREATE2 deployment
+            ├── DeployDetoxHookComplete.s.sol      # deploy + fund + pools + liquidity
+            ├── InitializePools.s.sol              # dynamic-fee pools + base fee
+            ├── InitializePoolsWithHook.s.sol      # pools for an existing hook
+            └── FundDetoxHook.s.sol                # hook funding
 ```
+
+> `detox-hook/packages/foundry/lib/` (v4-core, forge-std, OZ, Pyth SDK, …) is **gitignored** — run `forge install` in Quick Start below.
 
 ---
 
 ## Smart Contract Architecture
 
-### AvengeHook.sol
+### `DetoxHook.sol`
 
-The main contract inherits from Uniswap V4's `BaseHook` and implements:
+Inherits Uniswap V4's `BaseHook` (`beforeSwap` + `beforeSwapReturnsDelta` + `beforeDonate`):
 
 ```solidity
-contract AvengeHook is BaseHook {
-    // Configuration
-    uint256 public rhoBps = 8000;          // 80% hook share
-    uint256 public constant LP_DONATE_BPS = 8000; // 80% to LPs
-    uint24 public constant ARB_FEE_BPS = 500;     // 5% arb fee
-    uint256 public stalenessThreshold = 60;        // 60s oracle limit
+contract DetoxHook is BaseHook {
+    // Tunables
+    uint256 public constant ARBITRAGE_THRESHOLD = 200; // 2% deviation before interfering
+    uint256 public constant CAPTURE_RATE        = 70;  // % of opportunity taken by the hook
+    uint256 public constant LP_SHARE            = 80;  // % of the captured share donated to LPs
+    uint256 public constant MAX_CAPTURE_BPS     = 5000; // capture never exceeds 50% of input
+    uint24  private constant ARB_FEE_PIPS       = 3000; // 0.30% LP fee on detected arbs
+    uint24  private constant NORMAL_FEE_PIPS    = 500;  // 0.05% base fee for dynamic pools
 
     // State
-    IPyth public immutable pythOracle;
-    address public immutable owner;
+    uint256 public rhoBps;                 // = CAPTURE_RATE * 100 = 7000 (owner-tunable)
+    uint256 public stalenessThreshold;     // owner-tunable (live: 30 days)
+    address public owner;
+    IPyth   public pythOracle;
     mapping(Currency => bytes32) public pythPriceIds;
     mapping(PoolId => mapping(Currency => uint256)) public accumulatedTokens;
 
-    function _beforeSwap(...) internal override returns (bytes4, BeforeSwapDelta, uint24);
-    function _executeArbitrageCapture(...) internal returns (bytes4, BeforeSwapDelta, uint24);
-    function getParameters() external view returns (uint256, uint256, uint256);
-    function getHookPermissions() public pure override returns (Hooks.Permissions memory);
-    function updateParameters(uint256, uint256) external onlyOwner;
+    // Hook callbacks
+    function _beforeSwap(...)  internal override returns (bytes4, BeforeSwapDelta, uint24);
+    function _beforeDonate(...) internal pure override returns (bytes4);  // no-op
+    function getHookPermissions() public pure override returns (Hooks.Permissions);
+
+    // Views
+    function getParameters() external view returns (uint256 rho, uint256 staleness, uint256 lpDonateBps);
+    function getAccumulatedTokens(PoolId, Currency) external view returns (uint256);
+    function getOraclePrice(Currency) external view returns (uint256 price, bool valid, uint256 publishTime);
+    function getOraclePriceWithConfidence(Currency) external view returns (uint256, uint256, bool, uint256);
+    function calculateArbitrageOpportunity(PoolKey calldata, SwapParams calldata)
+        external view returns (uint256 arbitrageOpp, uint256 hookShare, bool shouldInterfere, bool outsideBand);
+    function normalFeePips() external pure returns (uint24);   // 500
+    function arbFeePips()    external pure returns (uint24);   // 3000
+
+    // Owner
+    function updateParameters(uint256 rhoBps, uint256 stalenessThreshold) external onlyOwner;
     function setPriceId(Currency, bytes32) external onlyOwner;
+    function setDynamicLPFee(PoolKey calldata, uint24) external onlyOwner;
     function withdrawAccumulatedETH(PoolId, uint256, address payable) external onlyOwner;
     function withdrawAccumulatedERC20(PoolId, Currency, uint256, address) external onlyOwner;
 }
 ```
 
-### ArbitrageLib.sol
+**Safety rails in `_beforeSwap`** (each returns "pass through" instead of reverting): exact-output swaps, invalid/stale oracle prices, zero pool price, no interference below the 2% threshold, capture clamped to `MAX_CAPTURE_BPS`, capture too large for `int128`, and pools with zero liquidity (because `donate()` reverts on an empty pool).
 
-Implements confidence-band arbitrage detection:
+**Settlement accounting** (verified by `DetoxHookCapture.t.sol`): `take(hookShare)` + `donate(lp)` + `settle(lp)` + the `afterSwap` hook delta nets to zero inside the unlock — the hook keeps only `hookKept` (20% of the capture), LPs receive the donated 80%.
 
-```solidity
-function analyzeArbitrageOpportunity(ArbitrageParams memory params, uint256 rhoBps)
-    internal pure returns (ArbitrageResult memory)
-{
-    // 1. Check if execution price is outside confidence band
-    bool isOutsideBand = executionPrice < lowerBand || executionPrice > upperBand;
+### `ArbitrageLib.sol`
 
-    // 2. Calculate arb opportunity
-    uint256 arbitrageOpportunity = |executionPrice - marketPrice|;
-
-    // 3. Apply rho share
-    uint256 hookShare = arbitrageOpportunity * rhoBps / 10000;
-
-    // 4. Only interfere if outside confidence band
-    shouldInterfere = isOutsideBand && hookShare > 0;
-}
-```
-
-### OracleLib.sol
-
-Normalizes Pyth prices to 8-decimal precision:
+Price convention and the decision math:
 
 ```solidity
-function getOraclePriceWithConfidence(IPyth pyth, bytes32 priceId, uint256 stalenessThreshold)
-    internal view returns (uint256 price, uint256 confidence, bool valid)
-{
-    PythStructs.Price memory priceData = pyth.getPriceUnsafe(priceId);
+// Pool price   = currency1 per currency0  (from slot0 sqrtPriceX96)
+// Market price = p(currency0) / p(currency1)   (oracle USD prices, ratio only)
+//
+// zeroForOne (selling currency0):  pool over-pays when poolPrice >  market
+// !zeroForOne (selling currency1): pool over-pays when poolPrice <  market
+//
+// opportunity (denominated in the input currency, measured against the
+// conservative side of the confidence interval):
+//   zeroForOne : amountIn * (poolPrice - marketUpper) / marketUpper
+//   other      : amountIn * (marketLower - poolPrice) / poolPrice
 
-    // Validate freshness
-    valid = (block.timestamp - priceData.publishTime) <= stalenessThreshold;
+shouldInterfere =
+       pool price is outside the confidence band
+    && pool pays the swapper more than the market
+    && |poolPrice - marketPrice| / marketPrice >= 200 bps;
 
-    // Normalize to 1e8
-    price = uint256(int256(priceData.price)) * 10**uint256(-priceData.expo - 8);
-    confidence = uint256(priceData.conf) * 10**uint256(-priceData.expo - 8);
-}
+hookShare = opportunity * rhoBps / 10000;   // rhoBps = 7000 by default
 ```
+
+### `OracleLib.sol`
+
+```solidity
+(PythStructs.Price memory p, bool success) = safePythCall(pythOracle, priceId);
+if (!success)                    return (0, 0, false);            // never reverts the swap
+if (block.timestamp - p.publishTime > stalenessThreshold) return (0, 0, false);
+price      = normalize(p.price, p.expo);   // → 1e8 PRICE_PRECISION
+confidence = normalize(p.conf,   p.expo);
+```
+
+### Fee override scope
+
+Uniswap V4 only honors a `beforeSwap` fee override when `key.fee == LPFeeLibrary.DYNAMIC_FEE_FLAG` (`0x800000`). Therefore:
+
+- Pools created by `InitializePools.s.sol`, `InitializePoolsWithHook.s.sol` and `DeployDetoxHookComplete.s.sol` use `DYNAMIC_FEE_FLAG` and call `hook.setDynamicLPFee(key, 500)` right after `initialize()` (dynamic pools otherwise start at a **0%** LP fee).
+- On static-fee pools the 0.30% arb fee is silently ignored — the capture still happens, only the fee override does not.
+- `ARBITRAGE_THRESHOLD`, `rhoBps` and the capture itself are unaffected by this.
 
 ---
 
 ## Rust CLI Tooling (`avenge-rs`)
 
-A complete Rust implementation for monitoring, managing, and deploying AvengeHook.
+`detox-rs` monitors, manages and deploys the hook.
 
 ### Commands
 
 | Command | Description | Requires Key |
 |---------|-------------|:------------:|
-| `monitor` | Watch for all hook events in real-time (polls every 2s) | No |
-| `prices` | Fetch ETH, USDC, BTC prices from Pyth directly | No |
-| `state` | Read full on-chain state (owner, params, accumulators, price IDs) | No |
-| `params` | Show current rhoBps, staleness, lpDonateBps | No |
-| `oracle` | Get oracle prices with confidence from the hook contract | No |
-| `permissions` | Display all 14 hook permission flags | No |
-| `simulate` | Compute arb opportunity from oracle + pool data | No |
-| `update-params` | Change rhoBps and staleness threshold | Yes |
-| `set-price-id` | Update Pyth price feed for a currency | Yes |
-| `withdraw` | Withdraw accumulated ETH or ERC20 | Yes |
-| `deploy` | Deploy via Forge to any chain | Yes |
+| `monitor` | Watch all 6 hook events in real time (polls every 2s) | No |
+| `prices` | Fetch ETH / USDC / BTC prices straight from Pyth | No |
+| `state` | Full on-chain state: owner, params, pool ID, accumulators, price IDs | No |
+| `params` | `rhoBps`, `stalenessThreshold`, `lpDonateBps` | No |
+| `oracle` | Oracle prices + confidence as the *hook* sees them | No |
+| `permissions` | Display all 14 permission flags | No |
+| `simulate [amount] [zeroForOne]` | Calls `calculateArbitrageOpportunity(poolKey, swapParams)` on-chain | No |
+| `update-params <rhoBps> <staleness>` | Change capture share and oracle staleness | Yes |
+| `set-price-id <currency> <priceId>` | Point a currency at a Pyth feed | Yes |
+| `withdraw <poolId> <currency> <amount> <recipient>` | Withdraw accumulated ETH/ERC20 | Yes |
+| `deploy` | Deploy via Forge to any chain (needs `DEPLOYMENT_KEY`) | Yes |
 | `deploy-local` | Deploy to local Anvil | No |
-| `test` | Run Forge test suite | No |
+| `test` | Run the Forge test suite | No |
+| `help` | Usage text | No |
 
 ### Usage Examples
 
 ```bash
 # Read current state
 RPC_URL=https://sepolia-rollup.arbitrum.io/rpc \
-HOOK_ADDRESS=0x444F320aA27e73e1E293c14B22EfBDCbce0e0088 \
+HOOK_ADDRESS=0xf53c43858D62a1765480508f3bE7481e883380A8 \
 cargo run -- state
 
-# Monitor events in real-time
+# Monitor events in real time
 cargo run -- monitor
 
-# Get oracle prices with confidence bands
+# Oracle prices as the hook sees them
 cargo run -- oracle
 
-# Show hook permissions
-cargo run -- permissions
+# Simulate a 1.0 ETH swap selling currency0 (zeroForOne = true)
+cargo run -- simulate 1.0 true
 
-# Simulate an arb opportunity
-cargo run -- simulate
+# Simulate selling 100 USDC (zeroForOne = false)
+cargo run -- simulate 100 false
 
 # Update parameters (owner only)
-DEPLOYMENT_KEY=0x... \
-RPC_URL=https://sepolia-rollup.arbitrum.io/rpc \
-HOOK_ADDRESS=0x444F320aA27e73e1E293c14B22EfBDCbce0e0088 \
-cargo run -- update-params 7500 120
+DEPLOYMENT_KEY=0x... cargo run -- update-params 7000 60
 
-# Set Pyth price ID
+# Set Pyth price ID for USDC
 cargo run -- set-price-id 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d \
   0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a
 
-# Withdraw accumulated ETH
-cargo run -- withdraw 0x5e6967b5... 0x0000000000000000000000000000000000000000 \
+# Withdraw accumulated ETH from a pool
+cargo run -- withdraw \
+  0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b \
+  0x0000000000000000000000000000000000000000 \
   1000000000000000000 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
 
-# Deploy to local Anvil
+# Deploy to local Anvil, then monitor
 anvil &
 cargo run -- deploy-local
-
-# Run all tests
-cargo run -- test
+RPC_URL=http://127.0.0.1:8545 HOOK_ADDRESS=<deployed> cargo run -- monitor
 ```
 
 ### Architecture
 
 ```
-main.rs          → CLI arg parsing, command dispatch
-    │
-    ├── config.rs    → Loads .env, auto-detects FORGE_DIR
-    │
-    ├── hook.rs      → ethers-rs abigen!() bindings
-    │                  All 12 contract functions (view + write)
-    │                  ABI covers all events
-    │
-    ├── monitor.rs   → Block polling loop (every 2s)
-    │                  Parses 6 event types
-    │                  Real-time terminal output
-    │
-    ├── deploy.rs    → Shells out to forge script
-    │                  Parses deployed address from output
-    │                  Supports local + remote deployment
-    │
-    └── pyth.rs      → Direct Pyth oracle reads
-                       Price normalization (expo → 1e8)
-                       Unit tests for normalization
+main.rs        CLI arg parsing, command dispatch
+ ├── config.rs Loads .env: RPC_URL, HOOK_ADDRESS, PYTH_ADDRESS, CHAIN_ID,
+ │              POOL_ID, USDC_ADDRESS, FORGE_DIR + simulate overrides
+ ├── hook.rs    ethers-rs abigen!() bindings — every view + owner function,
+ │              including calculateArbitrageOpportunity(PoolKey, SwapParams)
+ ├── monitor.rs Block-polling loop (2s) decoding all 6 events by topic0
+ ├── deploy.rs  Shells out to `forge script`, parses the deployed address
+ └── pyth.rs    Direct Pyth reads + expo → 1e8 normalization (unit-tested)
 ```
 
 ---
 
 ## Events
 
-All 6 on-chain events are monitored and decoded:
+All six events are emitted and decoded by `monitor.rs`:
 
 | Event | Indexed Fields | Data Fields |
 |-------|----------------|-------------|
@@ -289,7 +319,7 @@ All 6 on-chain events are monitored and decoded:
 | `ETHWithdrawn` | poolId, recipient | amount |
 | `ERC20Withdrawn` | poolId, currency | amount, recipient |
 
-### Event Topic Hashes (keccak256)
+### Event Topic Hashes (keccak256, verified against `cast sig-event`)
 
 ```
 ArbitrageCaptured:  0x815f5204730edec69803e4e5f169e34a0d37eb4217f2d04b104edab0d2496989
@@ -304,39 +334,38 @@ ERC20Withdrawn:     0x7f7a3c8adc2282c3f39a78be1ad8844fb24545a77dd1e1179c41d11e8a
 
 ## Testing
 
-### Solidity Tests (10/10 passing)
+### Solidity — 136 / 136 passing (13 suites)
 
 ```bash
 cd detox-hook/packages/foundry
-forge test -vvv
+forge test
 ```
 
-| Test | What it verifies |
-|------|------------------|
-| `test_HookDeployment` | Hook deploys, connects to PoolManager, has correct permissions |
-| `test_HookPermissions` | All 14 permission flags correct (beforeSwap, beforeDonate, etc.) |
-| `test_PoolInitialization` | Pool initializes at 1:1 price with hook attached |
-| `test_BasicSwap` | Swap executes, hook doesn't break normal trades |
-| `test_MultipleSwaps` | 3 consecutive swaps succeed (alternating directions) |
-| `test_SmallSwap` | Edge case: very small swap amount (1000 wei) |
-| `test_HookDoesNotInterferWithLiquidity` | Add/remove liquidity unaffected |
-| `test_HookReturnValues` | Hook returns correct selector and delta |
-| `test_GetParameters` | Returns 3 values: rho=8000, staleness=60, lpDonate=8000 |
-| `test_AccumulatedTokensTracking` | Large swap triggers tracking |
+| Suite | Tests | What it verifies |
+|-------|:-----:|------------------|
+| `ArbitrageLib.t.sol` | 21 | Price convention, confidence bounds, opportunity math, threshold |
+| `OracleLib.t.sol` | 23 | Pyth normalization, staleness, invalid/zero price handling |
+| `DetoxHookWave1.t.sol` | 13 | Deployment, permissions, params, swaps, accumulators |
+| `DetoxHook.t.sol` | 10 | Parameters, permissions, tracking, owner functions |
+| `DetoxHookWave2.t.sol` | 10 | Arbitrage detection both directions, thresholds, param updates |
+| `DetoxHookCapture.t.sol` | 8 | **End-to-end capture**: take → donate → keep, fee override, caps, stale oracle, external `donate()` |
+| `DetoxHookLocal.t.sol` | 9 | Local Anvil flows |
+| `DetoxHookLocalSimple.t.sol` | 1 | Simplified local flow |
+| `SwapRouter.t.sol` | 8 | Test router integration |
+| `DeployDetoxHookScript.t.sol` | 11 | CREATE2 mining, script helpers, full deploy workflow |
+| `HookMinerTest.t.sol` | 4 | Hook address flag mining |
+| `DetoxHookLive.t.sol` | 7 | Live-address introspection |
+| `DetoxHookArbitrumSepoliaFork.t.sol` | 11 | Fork of Arbitrum Sepolia: real swaps, liquidity, Pyth reads (**needs internet**) |
 
-### Rust Tests (4/4 passing)
+The fork suite is the only one that touches the network — it hardcodes `https://sepolia-rollup.arbitrum.io/rpc`; everything else runs offline.
+
+### Rust — 4 / 4 passing
 
 ```bash
-cd avenge-rs
-cargo test
+cd avenge-rs && cargo test
 ```
 
-| Test | What it verifies |
-|------|------------------|
-| `test_normalize_same_exp` | Price at same exponent passes through |
-| `test_normalize_positive_exp` | Price with expo=-1 normalizes to 1e8 |
-| `test_normalize_very_negative_exp` | Price with expo=-10 normalizes correctly |
-| `test_normalize_zero` | Zero price returns zero |
+`test_normalize_same_exp`, `test_normalize_positive_exp`, `test_normalize_very_negative_exp`, `test_normalize_zero` — Pyth `expo` → 1e8 normalization.
 
 ---
 
@@ -344,75 +373,97 @@ cargo test
 
 ### Contract Parameters
 
-```solidity
-// AvengeHook.sol
-uint256 public rhoBps = 8000;              // 80% — hook's capture share
-uint256 public constant LP_DONATE_BPS = 8000; // 80% — donated to LPs
-uint24 public constant ARB_FEE_BPS = 500;      // 5% — dynamic fee on arb
-uint256 public stalenessThreshold = 60;         // 60s — oracle freshness
-uint256 private constant BASIS_POINTS = 10000;  // 100%
-```
+| Parameter | Value | Meaning |
+|-----------|------:|---------|
+| `ARBITRAGE_THRESHOLD` | `200` bps (2%) | Minimum pool-vs-market deviation before interfering |
+| `CAPTURE_RATE` / `rhoBps` | `70`% / `7000` | Share of the opportunity captured by the hook (owner-tunable) |
+| `LP_SHARE` / `LP_DONATE_BPS` | `80`% / `8000` | Share of the capture donated to LPs via `donate()` |
+| `MAX_CAPTURE_BPS` | `5000` (50%) | Hard cap: capture can never exceed half of the swap input |
+| `ARB_FEE_PIPS` | `3000` (0.30%) | LP fee charged on a detected arb (dynamic pools only) |
+| `NORMAL_FEE_PIPS` | `500` (0.05%) | Base LP fee for dynamic pools |
+| `stalenessThreshold` | owner-set; live `2592000` s (30 d) | Oracle freshness limit (owner-tunable) |
+| `BASIS_POINTS` | `10000` | 100% |
+
+> Fee units: Uniswap V4 LP fees are **pips** — `1e6 = 100%`. So `3000` is **0.30%**, not 30%.
 
 ### Environment Variables
 
 ```bash
 # avenge-rs/.env
-RPC_URL=http://127.0.0.1:8545                    # Required
-HOOK_ADDRESS=0x444F320aA27e73e1E293c14B22EfBDCbce0e0088  # Required
-PYTH_ADDRESS=0x4374e5a8b9C22271E9EB878A2AA31DE97DF15DAF  # Optional
-CHAIN_ID=421614                                  # Default: Arbitrum Sepolia
-FORGE_DIR=./detox-hook/packages/foundry          # Auto-detected
-DEPLOYMENT_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80  # For owner commands
+RPC_URL=http://127.0.0.1:8545                             # Required
+HOOK_ADDRESS=0xf53c43858D62a1765480508f3bE7481e883380A8   # Required
+PYTH_ADDRESS=0x4374e5a8b9C22271E9EB878A2AA31DE97DF15DAF   # Optional (defaults to Arbitrum Sepolia)
+CHAIN_ID=421614                                           # Default: Arbitrum Sepolia
+FORGE_DIR=./detox-hook/packages/foundry                   # Auto-detected
+DEPLOYMENT_KEY=0x...                                      # Owner commands + deploy
+
+# Pool context used by `state` and `simulate`
+POOL_ID=0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b
+USDC_ADDRESS=0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d
+
+# Pool key quoted by `simulate` (defaults match POOL_ID above)
+CURRENCY0=0x0000000000000000000000000000000000000000
+CURRENCY1=0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d
+POOL_FEE=8388608  # dynamic-fee pool
+TICK_SPACING=30
+CURRENCY0_DECIMALS=18
+CURRENCY1_DECIMALS=6
 ```
 
 ---
 
 ## Game Theory
 
-AvengeHook creates aligned incentives for all participants:
-
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    VALUE FLOW                           │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│   Arbitrageur ──swaps──▶ Pool                           │
-│        │                  │                             │
-│        │    ┌─────────────┼─────────────┐               │
-│        │    │             │             │               │
-│        ▼    ▼             ▼             ▼               │
-│   Keeps 30%  Hook takes 80%  LPs get 80%  Owner keeps   │
-│   of arb     of opportunity  of hook's   20% of hook's  │
-│   profit     as fee          share       share          │
-│                                                         │
-│   Result: Arbitrageurs still profitable (30%)           │
-│           LPs earn MORE than without hook (+15-25%)     │
-│           Protocol accumulates sustainable revenue      │
-│           Regular traders get fairer prices             │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                      VALUE FLOW                          │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│   Arbitrageur ── swap ──▶ Pool                           │
+│        │                    │                            │
+│        ▼                    ▼                            │
+│   keeps 30%          hook captures 70% of opportunity    │
+│   of opportunity            │                            │
+│                             ├─ 80% of that → donate()    │
+│                             │    (56% of the whole       │
+│                             │     opportunity → LPs)     │
+│                             └─ 20% of that → hook        │
+│                                  (14% → owner treasury)  │
+│                                                          │
+│   + pays 0.30% LP fee on the arb swap (dynamic pools)    │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Why This Works
 
-- **Arbitrageurs still profit** — 30% of opportunity maintains market efficiency
-- **LPs win big** — 80% of captured value goes directly to feeGrowthGlobal
-- **Protocol earns** — 20% accumulates in hook for treasury
-- **No MEV arms race** — on-chain detection can't be front-run
-- **Pyth confidence bands** — prevents false positives that would hurt normal swappers
+- **Arbitrageurs still profit** — at the 2% intervention threshold the arb nets `30% × 2% − 0.30% = +0.30%`, so they keep correcting prices instead of abandoning the pool.
+- **LPs win** — 56% of every detected opportunity lands in `feeGrowthGlobal`, paid to in-range LPs (an extra `donate()` on top of normal swap fees).
+- **The protocol earns** — the remaining 14% accrues in the hook and is withdrawable by the owner.
+- **No arms race** — detection runs on-chain in the same block the mispricing appears.
+- **Confidence bands** — normal swappers are never taxed for ordinary volatility.
 
 ---
 
 ## Live Deployment
 
-**Arbitrum Sepolia Testnet:**
+**Arbitrum Sepolia:**
 
-| Component | Address | Status |
-|-----------|---------|--------|
-| **AvengeHook** | [`0x444F320aA27e73e1E293c14B22EfBDCbce0e0088`](https://arbitrum-sepolia.blockscout.com/address/0x444F320aA27e73e1E293c14B22EfBDCbce0e0088) | Deployed & Verified |
-| **Pool 1** | `0x5e6967b5ca922ff1aa7f25521cfd03d9a59c17536caa09ba77ed0586c238d23f` | ETH/USDC 0.05% |
-| **Pool 2** | `0x10fe1bb5300768c6f5986ee70c9ee834ea64ea704f92b0fd2cda0bcbe829ec90` | ETH/USDC 0.05% |
+| Component | Address / ID | Notes |
+|-----------|--------------|-------|
+| **AvengeHook hook** | [`0xf53c43858D62a1765480508f3bE7481e883380A8`](https://arbitrum-sepolia.blockscout.com/address/0xf53c43858D62a1765480508f3bE7481e883380A8) | Deployed, verified, owner `0x767166724ec61042ea01c43278b94471C950B824`, permissions `beforeSwap`/`beforeSwapReturnDelta`/`beforeDonate` |
+| **Pool 1** | `0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b` | ETH/USDC, **dynamic fee** (`8388608`, base `500` = 0.05%), tickSpacing **30**, initialized at **2500 USDC/ETH**, range −198690…−197490 |
+| **Pool 2** | `0x19bfceedc254ba74b1eed66e2d88551be735cca9c219a2627fb643fa83bb6d43` | ETH/USDC, **dynamic fee** (`8388608`, base `500` = 0.05%), tickSpacing **120**, initialized at **2600 USDC/ETH** |
+| **PoolManager** | [`0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317`](https://arbitrum-sepolia.blockscout.com/address/0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317) | Uniswap v4 |
+| **USDC (currency1)** | [`0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d`](https://arbitrum-sepolia.blockscout.com/address/0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d) | 6 decimals |
+| **Pyth contract** | `0x4374e5a8b9C22271E9EB878A2AA31DE97DF15DAF` | ETH/USD + USDC/USD feeds |
+| **PoolSwapTest** | [`0xf3A39C86dbd13C45365E57FB90fe413371F65AF8`](https://arbitrum-sepolia.blockscout.com/address/0xf3A39C86dbd13C45365E57FB90fe413371F65AF8) | Verified; `swap` selector `0x2229d0b4` |
 
-**Results:** 15-25% LP revenue increase, <500ms oracle latency, gas optimized.
+**Deployment verified end-to-end (2026-09-27):**
+
+- Fresh hook build: full parameter getters (`rhoBps` 7000, `lpDonateBps` 8000, `arbFeePips` 3000, `normalFeePips` 500) and the `beforeDonate` flag, so third-party `poolManager.donate()` works.
+- `oracle` reports **both feeds valid** — `stalenessThreshold` is set to **2 592 000 s (30 days)** because all Pyth Hermes endpoints have required an API key since the Pyth Core upgrade (2026-08-26) and the feeds are only updated sporadically by third parties. Re-tighten with `cargo run -- update-params 7000 604800` once a fresh feed is wired up.
+- Live interference capture: tx [`0x85dd8e54…61490`](https://arbitrum-sepolia.blockscout.com/tx/0x85dd8e54fa2078b35fb8b0588f4ae49729ec30cccdb66c5179b1d09a96f61490) swapped 1 USDC → the hook detected the band deviation, emitted the capture event (`hookShare = 55119`, `opportunity = 78742`, exactly matching `simulate`), donated to LPs, applied the 0.30% override fee, and retained 11 024 units for the owner (`getAccumulatedTokens > 0`).
+- Both pools hold liquidity (1.3e12 in the active range) and return the exact initialization prices through `slot0`.
 
 ---
 
@@ -422,48 +473,48 @@ AvengeHook creates aligned incentives for all participants:
 
 - [Foundry](https://getfoundry.sh/) — `curl -L https://foundry.paradigm.xyz | bash && foundryup`
 - [Rust](https://rustup.rs/) — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- [Anvil](https://book.getfoundry.sh/reference/anvil/) — comes with Foundry
 
-### 1. Clone & Setup
+### 1. Clone & install libraries
 
 ```bash
 git clone https://github.com/Yash-arch-ui/AvengeHook.git
 cd AvengeHook
+
+# lib/ is gitignored — pull the Solidity dependencies
+cd detox-hook/packages/foundry
+forge install foundry-rs/forge-std
+forge install OpenZeppelin/openzeppelin-contracts
+forge install gnsps/solidity-bytes-utils
+forge install Uniswap/v4-core
+forge install Uniswap/v4-periphery
+forge install pyth-network/pyth-sdk-solidity
+cd ../../..
 ```
 
-### 2. Run Solidity Tests
+### 2. Run the tests
 
 ```bash
 cd detox-hook/packages/foundry
-forge install
-forge test -vvv
-```
+forge test                 # 136/136 (fork suite needs internet access)
 
-### 3. Run Rust Tests
-
-```bash
-cd avenge-rs
+cd ../../avenge-rs
 cp .env.example .env
-cargo test
+cargo test                 # 4/4
 ```
 
-### 4. Deploy Locally
+### 3. Deploy locally
 
 ```bash
-# Terminal 1: Start Anvil
-anvil
-
-# Terminal 2: Deploy
+anvil &                    # Terminal 1
 cd avenge-rs
-cargo run -- deploy-local
+cargo run -- deploy-local  # Terminal 2
 ```
 
-### 5. Monitor Events
+### 4. Monitor and quote
 
 ```bash
-RPC_URL=http://127.0.0.1:8545 \
-HOOK_ADDRESS=<deployed-address> \
-cargo run -- monitor
+RPC_URL=http://127.0.0.1:8545 HOOK_ADDRESS=<deployed> cargo run -- monitor
+RPC_URL=http://127.0.0.1:8545 HOOK_ADDRESS=<deployed> cargo run -- simulate 1.0 true
 ```
 
 ---
@@ -473,25 +524,22 @@ cargo run -- monitor
 | Layer | Technology | Version |
 |-------|-----------|---------|
 | Smart Contracts | Solidity | 0.8.26 |
-| Hook Framework | Uniswap V4 BaseHook | latest |
-| Oracle | Pyth Network | Pull model |
-| EVM Target | Cancun | (PUSH0, MCOPY) |
-| Tooling Language | Rust | 1.75+ |
+| Hook Framework | Uniswap V4 `BaseHook` | v4-core (cancun) |
+| Oracle | Pyth Network | pull model, confidence bands |
+| Tooling Language | Rust | 2021 edition |
 | Ethereum Client | ethers-rs | 2.0 |
 | Async Runtime | tokio | 1.x |
-| Build System | Foundry | forge, cast |
-| Testing | Forge Test + cargo test | — |
+| Build / Test | Foundry (forge, cast) | — |
 
 ---
 
-## Gas Optimization
+## Gas & Sizing
 
-- **Deployment:** ~188k gas
-- **Normal swap (no arb):** ~21k gas overhead
-- **Arb capture swap:** ~85k gas (includes oracle reads + donate)
-- **Optimizer:** 50 runs (optimized for frequent hook calls)
-- **via_ir:** Enabled for better optimization
-- **sparse_mode:** Enabled for faster compilation
+- **Optimizer:** 50 runs, `via_ir` enabled, `sparse_mode`, `bytecode_hash = "none"`
+- **Deployed `DetoxHook`:** ≈ 10.4 KB (well under the 24 KB EIP-170 limit)
+- **Exact-output swaps:** exit at the top of `_beforeSwap` with no oracle work
+- **Exact-input swaps:** two Pyth reads + slot0 read, then either a pass-through return or, on a detected arb, `take` + `donate` + `settle` (full flow exercised by `DetoxHookCapture.t.sol`)
+- No proxy, no upgrade path — redeploy to change logic
 
 ---
 
@@ -499,12 +547,14 @@ cargo run -- monitor
 
 | Risk | Mitigation |
 |------|-----------|
-| Oracle manipulation | Pyth confidence bands prevent low-confidence triggers |
-| Stale prices | `stalenessThreshold` (60s) with fallback to no-interference |
-| Reentrancy | Nonce-based guard (no `nonReentrant` — avoids Aave deadlock) |
-| False positives | Confidence bands ensure only real arbs trigger |
-| Owner key compromise | Standard multisig recommended for production |
-| Flashloan attacks | Hook only reads prices, doesn't hold funds long-term |
+| Oracle manipulation | Capture requires the pool price to sit **outside** Pyth's confidence band **and** deviate ≥ 2%; low-confidence prices widen the band and suppress triggers |
+| Stale prices | `stalenessThreshold` (live: 30 d) — stale/invalid prices make the hook pass every swap through |
+| Reentrancy | No guard is used: the hook only calls `PoolManager` (trusted) and Pyth (staticcall), and completes take/donate/settle inside a single `beforeSwap`/`afterSwap` frame. *(An earlier "nonce-based reentrancy guard" claim was not in the code and has been removed.)* |
+| Swapper griefing | Fail-open on every error path; capture clamped to 50% of input (`MAX_CAPTURE_BPS`); `int128` range checked; empty pools skipped |
+| Fee-override scope | The 0.30% override only applies to **dynamic-fee** pools; static-fee pools keep their configured fee (documented, not silently broken) |
+| Hook token balance | Capture takes from the pool and settles from the same receipt — the hook never needs pre-funding, and keeps only `hookKept` |
+| Owner key compromise | Use a multisig for `owner`; all `onlyOwner` paths are parameter/fee/withdraw only |
+| Flashloan attacks | The hook reads prices and moves funds only within one unlock; it holds no user deposits |
 
 ---
 
@@ -512,11 +562,10 @@ cargo run -- monitor
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make changes in `avenge-rs/` (Rust) or `detox-hook/packages/foundry/src/` (Solidity)
+3. Change `avenge-rs/` (Rust) or `detox-hook/packages/foundry/src/` (Solidity)
 4. Add tests for new functionality
-5. Ensure all tests pass: `cargo test` + `forge test`
-6. Commit your changes
-7. Push to the branch and open a Pull Request
+5. Make sure `forge test` and `cargo test` both pass
+6. Commit and open a Pull Request
 
 ---
 
@@ -528,13 +577,13 @@ MIT
 
 ## Acknowledgments
 
-- [Uniswap V4](https://docs.uniswap.org/contracts/v4/overview) — Hook framework
-- [Pyth Network](https://docs.pyth.network/) — Real-time oracle prices
-- [Foundry](https://book.getfoundry.sh/) — Solidity development toolkit
+- [Uniswap V4](https://docs.uniswap.org/contracts/v4/overview) — hook framework
+- [Pyth Network](https://docs.pyth.network/) — real-time oracle prices
+- [Foundry](https://book.getfoundry.sh/) — Solidity toolchain
 - [ethers-rs](https://docs.rs/ethers) — Ethereum Rust library
 
 ---
 
 <p align="center">
-  <strong>AvengeHook — Where MEV benefits everyone, not just the bots.</strong>
+  <strong>AvengeHook — where MEV benefits everyone, not just the bots.</strong>
 </p>
