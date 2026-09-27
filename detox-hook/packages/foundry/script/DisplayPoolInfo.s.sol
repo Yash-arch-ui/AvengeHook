@@ -16,7 +16,7 @@ contract DisplayPoolInfo is Script {
     using PoolIdLibrary for PoolKey;
 
     // DetoxHook address
-    address constant DETOX_HOOK = 0x444F320aA27e73e1E293c14B22EfBDCbce0e0088;
+    address constant DETOX_HOOK = 0xf53c43858D62a1765480508f3bE7481e883380A8;
 
     function run() external view {
         console.log("=== DetoxHook Pool Information ===");
@@ -35,7 +35,7 @@ contract DisplayPoolInfo is Script {
 
     function _displayPool1() internal view {
         console.log("=== Pool 1 (0.3% fee, ~2500 USDC/ETH) ===");
-        console.log("PoolId: 0x5e6967b5ca922ff1aa7f25521cfd03d9a59c17536caa09ba77ed0586c238d23f");
+        console.log("PoolId: 0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b");
         console.log("Description: ETH/USDC 0.3% fee pool");
         console.log("Target Price: ~2500 USDC/ETH");
         console.log("Fee: 3000 (0.3%)");

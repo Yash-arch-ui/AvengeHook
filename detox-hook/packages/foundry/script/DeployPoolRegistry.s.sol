@@ -17,7 +17,7 @@ contract DeployPoolRegistry is Script {
     using PoolIdLibrary for PoolKey;
 
     // DetoxHook address (already deployed)
-    address constant DETOX_HOOK = 0x444F320aA27e73e1E293c14B22EfBDCbce0e0088;
+    address constant DETOX_HOOK = 0xf53c43858D62a1765480508f3bE7481e883380A8;
     
     // Pool configurations from previous deployment
     struct PoolConfig {
@@ -72,7 +72,7 @@ contract DeployPoolRegistry is Script {
                 fee: 3000,
                 tickSpacing: 60,
                 targetPrice: 2500,
-                expectedPoolId: 0x5e6967b5ca922ff1aa7f25521cfd03d9a59c17536caa09ba77ed0586c238d23f
+                expectedPoolId: 0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b
             }),
             PoolConfig({
                 name: "pool2", 
@@ -177,7 +177,7 @@ contract DeployPoolRegistry is Script {
         console.log("");
         
         console.log("Pool 1 (0.3% fee):");
-        console.log("  PoolId: 0x5e6967b5ca922ff1aa7f25521cfd03d9a59c17536caa09ba77ed0586c238d23f");
+        console.log("  PoolId: 0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b");
         console.log("  Target Price: ~2500 USDC/ETH");
         console.log("  Fee: 3000 (0.3%)");
         console.log("  Tick Spacing: 60");

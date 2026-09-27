@@ -15,7 +15,7 @@ contract DeploySwapRouterFixed is Script {
     address constant POOL_SWAP_TEST = 0x9A8ca723F5dcCb7926D00B71deC55c2fEa1F50f7;
     address constant ETH_ADDRESS = 0x0000000000000000000000000000000000000000;
     address constant USDC_ADDRESS = 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d;
-    address constant DETOX_HOOK = 0x444F320aA27e73e1E293c14B22EfBDCbce0e0088;
+    address constant DETOX_HOOK = 0xf53c43858D62a1765480508f3bE7481e883380A8;
     
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYMENT_KEY");
