@@ -93,12 +93,13 @@ ARBITRAGEBOT/
 │   ├── Cargo.toml                         # ethers 2.0, tokio, eyre, serde
 │   ├── .env.example                       # Configuration template
 │   └── src/
-│       ├── main.rs                        # CLI entry point (14 commands)
+│       ├── main.rs                        # CLI entry point (15 commands)
 │       ├── config.rs                      # env config + FORGE_DIR / POOL_ID / USDC
 │       ├── hook.rs                        # abigen!() bindings incl. calculateArbitrageOpportunity
 │       ├── monitor.rs                     # real-time event monitoring (6 events)
 │       ├── deploy.rs                      # shells out to forge script
-│       └── pyth.rs                        # direct Pyth price reads + normalization tests
+│       ├── pyth.rs                        # direct Pyth price reads + normalization tests
+│       └── pyth_live.rs                   # keyless on-chain reader (live-prices) + tests
 │
 └── detox-hook/
     └── packages/foundry/                  # Foundry project
@@ -239,6 +240,7 @@ Uniswap V4 only honors a `beforeSwap` fee override when `key.fee == LPFeeLibrary
 |---------|-------------|:------------:|
 | `monitor` | Watch all 6 hook events in real time (polls every 2s) | No |
 | `prices` | Fetch ETH / USDC / BTC prices straight from Pyth | No |
+| `live-prices` | Keyless on-chain Pyth reader: age, freshness vs live staleness, RPC latency (HTTP/WS auto-detect) | No |
 | `state` | Full on-chain state: owner, params, pool ID, accumulators, price IDs | No |
 | `params` | `rhoBps`, `stalenessThreshold`, `lpDonateBps` | No |
 | `oracle` | Oracle prices + confidence as the *hook* sees them | No |
@@ -359,13 +361,13 @@ forge test
 
 The fork suite is the only one that touches the network — it hardcodes `https://sepolia-rollup.arbitrum.io/rpc`; everything else runs offline.
 
-### Rust — 4 / 4 passing
+### Rust — 10 / 10 passing
 
 ```bash
 cd avenge-rs && cargo test
 ```
 
-`test_normalize_same_exp`, `test_normalize_positive_exp`, `test_normalize_very_negative_exp`, `test_normalize_zero` — Pyth `expo` → 1e8 normalization.
+Pyth `expo` → 1e8 normalization (`test_normalize_*`), plus `pyth_live` reader tests: feed-ID stability, f64 math across mixed exponents, `1e8` scaling, negative-mantissa rejection, and the freshness window.
 
 ---
 
@@ -537,7 +539,7 @@ forge test                 # 136/136 (fork suite needs internet access)
 
 cd ../../avenge-rs
 cp .env.example .env
-cargo test                 # 4/4
+cargo test                 # 10/10
 ```
 
 ### 3. Deploy locally
