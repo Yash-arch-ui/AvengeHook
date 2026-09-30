@@ -12,7 +12,7 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 contract DeploySwapRouterFixed is Script {
     
     // Arbitrum Sepolia addresses (properly checksummed)
-    address constant POOL_SWAP_TEST = 0x9A8ca723F5dcCb7926D00B71deC55c2fEa1F50f7;
+    address constant POOL_SWAP_TEST = 0xf3A39C86dbd13C45365E57FB90fe413371F65AF8;
     address constant ETH_ADDRESS = 0x0000000000000000000000000000000000000000;
     address constant USDC_ADDRESS = 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d;
     address constant AVENGE_HOOK = 0xf53c43858D62a1765480508f3bE7481e883380A8;
@@ -22,12 +22,12 @@ contract DeploySwapRouterFixed is Script {
         
         vm.startBroadcast(deployerPrivateKey);
         
-        // Create pool key for ETH/USDC with 0.05% fee
+        // Pool 1 key: ETH/USDC dynamic fee, tickSpacing 30 (live pool 0x5771f78e...)
         PoolKey memory poolKey = PoolKey({
             currency0: Currency.wrap(ETH_ADDRESS),
             currency1: Currency.wrap(USDC_ADDRESS),
-            fee: 500,  // 0.05%
-            tickSpacing: 10,
+            fee: 8388608,  // DYNAMIC_FEE_FLAG, base fee set to 500 (0.05%)
+            tickSpacing: 30,
             hooks: IHooks(AVENGE_HOOK)
         });
         

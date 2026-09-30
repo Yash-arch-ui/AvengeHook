@@ -68,19 +68,19 @@ contract DeployPoolRegistry is Script {
         PoolConfig[2] memory configs = [
             PoolConfig({
                 name: "pool1",
-                description: "ETH/USDC 0.3% fee pool (~2500 USDC/ETH)",
-                fee: 3000,
-                tickSpacing: 60,
+                description: "ETH/USDC dynamic fee pool (~2500 USDC/ETH)",
+                fee: 8388608,
+                tickSpacing: 30,
                 targetPrice: 2500,
                 expectedPoolId: 0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b
             }),
             PoolConfig({
                 name: "pool2", 
-                description: "ETH/USDC 0.05% fee pool (~2600 USDC/ETH)",
-                fee: 500,
-                tickSpacing: 10,
+                description: "ETH/USDC dynamic fee pool (~2600 USDC/ETH)",
+                fee: 8388608,
+                tickSpacing: 120,
                 targetPrice: 2600,
-                expectedPoolId: 0x10fe1bb5300768c6f5986ee70c9ee834ea64ea704f92b0fd2cda0bcbe829ec90
+                expectedPoolId: 0x19bfceedc254ba74b1eed66e2d88551be735cca9c219a2627fb643fa83bb6d43
             })
         ];
         
@@ -152,16 +152,16 @@ contract DeployPoolRegistry is Script {
             return PoolKey({
                 currency0: Currency.wrap(address(0)),
                 currency1: Currency.wrap(usdc),
-                fee: 3000,
-                tickSpacing: 60,
+                fee: 8388608,
+                tickSpacing: 30,
                 hooks: IHooks(AVENGE_HOOK)
             });
         } else if (keccak256(bytes(poolName)) == keccak256(bytes("pool2"))) {
             return PoolKey({
                 currency0: Currency.wrap(address(0)),
                 currency1: Currency.wrap(usdc),
-                fee: 500,
-                tickSpacing: 10,
+                fee: 8388608,
+                tickSpacing: 120,
                 hooks: IHooks(AVENGE_HOOK)
             });
         } else {
@@ -176,17 +176,17 @@ contract DeployPoolRegistry is Script {
         console.log("Chain:", ChainAddresses.getChainName(block.chainid));
         console.log("");
         
-        console.log("Pool 1 (0.3% fee):");
+        console.log("Pool 1 (dynamic fee):");
         console.log("  PoolId: 0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b");
         console.log("  Target Price: ~2500 USDC/ETH");
-        console.log("  Fee: 3000 (0.3%)");
-        console.log("  Tick Spacing: 60");
+        console.log("  Fee: 8388608 (dynamic), base 500 (0.05%)");
+        console.log("  Tick Spacing: 30");
         console.log("");
         
-        console.log("Pool 2 (0.05% fee):");
-        console.log("  PoolId: 0x10fe1bb5300768c6f5986ee70c9ee834ea64ea704f92b0fd2cda0bcbe829ec90");
+        console.log("Pool 2 (dynamic fee):");
+        console.log("  PoolId: 0x19bfceedc254ba74b1eed66e2d88551be735cca9c219a2627fb643fa83bb6d43");
         console.log("  Target Price: ~2600 USDC/ETH");
-        console.log("  Fee: 500 (0.05%)");
-        console.log("  Tick Spacing: 10");
+        console.log("  Fee: 8388608 (dynamic), base 500 (0.05%)");
+        console.log("  Tick Spacing: 120");
     }
 } 

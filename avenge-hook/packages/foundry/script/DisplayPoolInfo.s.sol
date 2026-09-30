@@ -34,23 +34,23 @@ contract DisplayPoolInfo is Script {
     }
 
     function _displayPool1() internal view {
-        console.log("=== Pool 1 (0.3% fee, ~2500 USDC/ETH) ===");
+        console.log("=== Pool 1 (dynamic fee, ~2500 USDC/ETH) ===");
         console.log("PoolId: 0x5771f78e1245220ba528309807e28c9bad50849292b2a694ffba8958196c9c4b");
-        console.log("Description: ETH/USDC 0.3% fee pool");
+        console.log("Description: ETH/USDC dynamic fee pool");
         console.log("Target Price: ~2500 USDC/ETH");
-        console.log("Fee: 3000 (0.3%)");
-        console.log("Tick Spacing: 60");
+        console.log("Fee: 8388608 (dynamic), base 500 (0.05%)");
+        console.log("Tick Spacing: 30");
         console.log("Status: Initialized & Funded");
         console.log("Initial Liquidity: 1 USDC + 0.0004 ETH");
     }
 
     function _displayPool2() internal view {
-        console.log("=== Pool 2 (0.05% fee, ~2600 USDC/ETH) ===");
-        console.log("PoolId: 0x10fe1bb5300768c6f5986ee70c9ee834ea64ea704f92b0fd2cda0bcbe829ec90");
-        console.log("Description: ETH/USDC 0.05% fee pool");
+        console.log("=== Pool 2 (dynamic fee, ~2600 USDC/ETH) ===");
+        console.log("PoolId: 0x19bfceedc254ba74b1eed66e2d88551be735cca9c219a2627fb643fa83bb6d43");
+        console.log("Description: ETH/USDC dynamic fee pool");
         console.log("Target Price: ~2600 USDC/ETH");
-        console.log("Fee: 500 (0.05%)");
-        console.log("Tick Spacing: 10");
+        console.log("Fee: 8388608 (dynamic), base 500 (0.05%)");
+        console.log("Tick Spacing: 120");
         console.log("Status: Initialized & Funded");
         console.log("Initial Liquidity: 1 USDC + ~0.000385 ETH");
     }
@@ -64,8 +64,8 @@ contract DisplayPoolInfo is Script {
         PoolKey memory poolKey1 = PoolKey({
             currency0: Currency.wrap(address(0)), // ETH
             currency1: Currency.wrap(usdc), // USDC
-            fee: 3000,
-            tickSpacing: 60,
+            fee: 8388608,
+            tickSpacing: 30,
             hooks: IHooks(AVENGE_HOOK)
         });
         
@@ -73,8 +73,8 @@ contract DisplayPoolInfo is Script {
         PoolKey memory poolKey2 = PoolKey({
             currency0: Currency.wrap(address(0)), // ETH
             currency1: Currency.wrap(usdc), // USDC
-            fee: 500,
-            tickSpacing: 10,
+            fee: 8388608,
+            tickSpacing: 120,
             hooks: IHooks(AVENGE_HOOK)
         });
         
@@ -101,8 +101,8 @@ contract DisplayPoolInfo is Script {
         return PoolKey({
             currency0: Currency.wrap(address(0)),
             currency1: Currency.wrap(ChainAddresses.getUSDC(block.chainid)),
-            fee: 3000,
-            tickSpacing: 60,
+            fee: 8388608,
+            tickSpacing: 30,
             hooks: IHooks(AVENGE_HOOK)
         });
     }
@@ -112,8 +112,8 @@ contract DisplayPoolInfo is Script {
         return PoolKey({
             currency0: Currency.wrap(address(0)),
             currency1: Currency.wrap(ChainAddresses.getUSDC(block.chainid)),
-            fee: 500,
-            tickSpacing: 10,
+            fee: 8388608,
+            tickSpacing: 120,
             hooks: IHooks(AVENGE_HOOK)
         });
     }

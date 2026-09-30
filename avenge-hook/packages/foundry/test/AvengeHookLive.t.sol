@@ -15,7 +15,7 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 contract AvengeHookLive is Test {
     // Arbitrum Sepolia addresses
     address constant POOL_MANAGER = 0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317;
-    address constant AVENGE_HOOK = 0xadC387b56F58D9f5B486bb7575bf3B5EA5898088;
+    address constant AVENGE_HOOK = 0xf53c43858D62a1765480508f3bE7481e883380A8;
     
     AvengeHook hook;
     IPoolManager poolManager;
